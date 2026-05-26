@@ -5,6 +5,23 @@
   background: var(--bg-light-secondary, #f4f4f4);
 }
 
+.ai-assistant-iframe-wrapper {
+  flex: 1 1 auto;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.ai-assistant-iframe-loading {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-light-secondary, #f4f4f4);
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .ai-assistant-iframe {
   flex: 1 1 auto;
   width: 100%;

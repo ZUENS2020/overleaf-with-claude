@@ -34,6 +34,8 @@ export const AiAssistantPane = () => {
 
   const [status, setStatus] = useState<SessionStatus | null>(null)
   const [starting, setStarting] = useState(false)
+  const [stopping, setStopping] = useState(false)
+  const [iframeReady, setIframeReady] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const refreshStatus = useCallback(async () => {
@@ -55,6 +57,7 @@ export const AiAssistantPane = () => {
 
   const startSession = useCallback(async () => {
     setStarting(true)
+    setIframeReady(false)
     setError(null)
     try {
       const res = await postJSON<StartSessionResponse>(
@@ -76,13 +79,19 @@ export const AiAssistantPane = () => {
   }, [projectId])
 
   const stopSession = useCallback(async () => {
+    if (stopping) return
+    setStopping(true)
+    setError(null)
     try {
       await deleteJSON(`/project/${projectId}/ai/session`)
       setStatus({ active: false })
+      setIframeReady(false)
     } catch (err: any) {
       setError(err?.message || String(err))
+    } finally {
+      setStopping(false)
     }
-  }, [projectId])
+  }, [projectId, stopping])
 
   return (
     <div className="ai-assistant-panel">
@@ -101,6 +110,7 @@ export const AiAssistantPane = () => {
                 icon="stop_circle"
                 accessibilityLabel={t('ai_assistant_stop_session')}
                 size="sm"
+                disabled={stopping}
               />
             </OLTooltip>
           ) : undefined
@@ -125,15 +135,21 @@ export const AiAssistantPane = () => {
               <span>{t('ai_assistant_unhealthy')}</span>
             </div>
           )}
-          <iframe
-            title="Claude Code"
-            src={status.iframeUrl}
-            className="ai-assistant-iframe"
-            // code-server needs clipboard, downloads, and storage access; allow
-            // the subset it actually uses.
-            allow="clipboard-read; clipboard-write; downloads"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-clipboard-read allow-clipboard-write"
-          />
+          <div className="ai-assistant-iframe-wrapper">
+            {!iframeReady && (
+              <div className="ai-assistant-iframe-loading">
+                <FullSizeLoadingSpinner delay={0} />
+              </div>
+            )}
+            <iframe
+              title="Claude Code"
+              src={status.iframeUrl}
+              className="ai-assistant-iframe"
+              allow="clipboard-read; clipboard-write; downloads"
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-clipboard-read allow-clipboard-write"
+              onLoad={() => setIframeReady(true)}
+            />
+          </div>
         </>
       )}
     </div>
