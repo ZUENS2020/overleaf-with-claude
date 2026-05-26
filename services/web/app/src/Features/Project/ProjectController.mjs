@@ -972,7 +972,7 @@ const _ProjectController = {
         imageNames,
         gitBridgePublicBaseUrl: Settings.gitBridgePublicBaseUrl,
         gitBridgeEnabled: Features.hasFeature('git-bridge'),
-        aiAssistantEnabled: !!Settings.aiSession,
+        aiAssistantEnabled: !!Settings.aiAssistant?.claudeBin,
         wsUrl,
         showSupport: Features.hasFeature('support'),
         showTemplatesServerPro,

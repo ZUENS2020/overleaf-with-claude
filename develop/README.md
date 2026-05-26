@@ -21,47 +21,30 @@ Once the services are running, open <http://localhost/launchpad> to create the f
 
 ## AI assistant (Claude Code)
 
-The Claude Code rail panel is enabled out of the box — `bin/build` builds
-the per-user IDE image (`overleaf/claude-ide:dev`) as part of the normal
-build, and `bin/up` brings it up alongside everything else. No separate
-build step is needed.
+The AI assistant rail panel runs the `claude` CLI as a subprocess of the
+`web` service — no per-user containers, no iframe. Each Overleaf user
+links their own Claude account via in-app OAuth.
 
-To use it after the stack is up:
+Setup:
 
-1. Open a project at <http://localhost>.
-2. In the right rail, click the Claude Code icon and **Start session**. A
-   container is spawned for that `(user, project)` and code-server is
-   embedded in the panel.
-3. In the integrated terminal, run `claude` once. You'll be prompted to
-   complete the OAuth flow in your browser; the token is persisted in a
-   per-user named volume (`overleaf-claude-<userId>`), so subsequent
-   sessions skip this step.
+1. Generate an encryption key for stored OAuth tokens and set
+   `AI_ASSISTANT_TOKEN_KEY` in `dev.env`:
+   ```shell
+   openssl rand -hex 32
+   ```
+2. Ensure the `claude` CLI is installed in the `web` image (the dev
+   Dockerfile installs it). `AI_ASSISTANT_CLAUDE_BIN` controls the
+   binary path; leave empty to disable the feature.
 
-What runs where:
+Usage:
 
-| Component                | Where                                     |
-| ------------------------ | ----------------------------------------- |
-| code-server + claude CLI | per-(user, project) container             |
-| OT sync daemon           | same container, sidecar process           |
-| AiSessionManager         | inside the `web` service (uses dockerode) |
-| Reverse proxy            | mounted at `/ai/session/...` on `web`     |
+1. Open a project, click the AI assistant icon in the right rail.
+2. Click **Connect Claude** → authorize on anthropic.com → paste the
+   shown code back into Overleaf.
+3. Chat with Claude. File edits Claude makes are mirrored into the
+   project via DocumentUpdater and appear live in the editor.
 
-How to disable the feature: unset `AI_SESSION_IMAGE` in `dev.env` and run
-`bin/up` again. The rail panel disappears, no containers spawn, and the
-`claude-ide` build step still runs (harmlessly) but the image is unused.
-
-Notes:
-
-* `web` mounts `/var/run/docker.sock` so `AiSessionManager` can spawn
-  containers. If your Docker socket lives elsewhere, set
-  `DOCKER_SOCKET_PATH` in your shell before running `bin/up`.
-* All per-user containers join the `overleaf` network (named explicitly
-  in `docker-compose.yml`), so they can reach `web`, `document-updater`,
-  etc. by hostname.
-* The `claude-ide` service in `docker-compose.yml` builds the image but
-  its container exits 0 immediately (we only need the image, not a
-  running instance). It'll appear as `Exited (0)` in `docker compose ps`
-  — that's expected.
+See `docs/ai-assistant-lightweight-design.md` for the full design.
 
 ## Development
 

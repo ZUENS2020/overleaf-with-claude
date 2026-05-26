@@ -244,6 +244,13 @@ export const UserSchema = new Schema(
     dsMobileApp: {
       subscribed: { type: Boolean },
     },
+    aiAssistant: {
+      // OAuth tokens stored as JWE blobs (jose A256GCM, key from
+      // Settings.aiAssistant.tokenKey). Decrypt to { accessToken,
+      // refreshToken, expiresAt, scope }.
+      claudeOauth: { type: String },
+      claudeAccount: { type: String }, // display label (email or handle)
+    },
   },
   { minimize: false }
 )
