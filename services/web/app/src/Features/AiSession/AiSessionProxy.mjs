@@ -138,7 +138,9 @@ function attachUpgradeHandler(server, sessionMiddleware) {
         method: 'GET',
         path: target.pathname + target.search,
         headers: { ...req.headers, host: target.host },
-        agent: getAgent(session.internalUrl),
+        // Do NOT use the keep-alive agent here — WebSocket upgrades hold the
+        // TCP socket open indefinitely, which would poison the pool.
+        agent: false,
       })
       upstream.on('upgrade', (upRes, upSocket, upHead) => {
         const handshake = [
