@@ -24,6 +24,10 @@ import FileSync from './FileSync.mjs'
 const ROOT = join(tmpdir(), 'overleaf-ai-assistant')
 const sessions = new Map() // key = `${userId}:${projectId}` -> Session
 
+function newId() {
+  return Math.random().toString(36).slice(2)
+}
+
 function key(userId, projectId) {
   return `${userId}:${projectId}`
 }
@@ -160,7 +164,17 @@ class Session {
           userId: this.userId,
           projectId: this.projectId,
           cwd: this.cwd,
-          onFileChanged: path => this.emit('file-changed', { path }),
+          onFileChanged: (path, content) => {
+            this.emit('file-changed', { path })
+            // Also emit a simplified diff event if we have content.
+            // The frontend can render a "revert" option.
+            if (content) {
+              this.emit('file-diff', {
+                path,
+                hunks: [{ content: '(diff not available in MVP)' }],
+              })
+            }
+          },
         })
       } catch (err) {
         logger.warn({ err }, 'file sync start failed; continuing without it')
@@ -215,21 +229,61 @@ class Session {
         cost: obj.total_cost_usd || null,
       })
     }
+    // The CLI may emit permission-request events when running in
+    // modes that require user approval for certain tool calls.
+    if (obj.type === 'permission_request' || (obj.type === 'assistant' && obj.message?.content)) {
+      // Handle inline permission_request objects
+    }
+    if (obj.type === 'permission_request') {
+      this.emit('permission-request', {
+        id: obj.id || obj.request_id || newId(),
+        tool: obj.tool_name || obj.tool || 'unknown',
+        input: obj.input || {},
+        description: obj.description || obj.message || '',
+      })
+    }
   }
 
   async send(text, opts = {}) {
     if (!this.proc) await this.start(opts)
     this.lastActivity = Date.now()
     this.resetIdleTimer()
+    const content = [{ type: 'text', text }]
+    // Attach images if provided (base64-encoded)
+    if (Array.isArray(opts.images) && opts.images.length > 0) {
+      for (const img of opts.images) {
+        content.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: img.mediaType || 'image/png',
+            data: img.data,
+          },
+        })
+      }
+    }
     const msg = {
       type: 'user',
       message: {
         role: 'user',
-        content: [{ type: 'text', text }],
+        content,
       },
     }
     this.proc.stdin.write(JSON.stringify(msg) + '\n')
     this.emit('user-message', { text })
+  }
+
+  // Write a permission response back to the CLI's stdin.
+  // The user approved or denied a permission request from the CLI.
+  respondPermission(permissionId, allow) {
+    const msg = {
+      type: 'permission_response',
+      id: permissionId,
+      allow,
+    }
+    if (this.proc?.stdin) {
+      this.proc.stdin.write(JSON.stringify(msg) + '\n')
+    }
   }
 
   async stop() {
@@ -291,6 +345,10 @@ export default {
   async send(userId, projectId, text, opts) {
     const s = get(userId, projectId)
     await s.send(text, opts)
+  },
+  respondPermission(userId, projectId, permissionId, allow) {
+    const s = get(userId, projectId)
+    s.respondPermission(permissionId, allow)
   },
   async stop(userId, projectId) {
     const k = key(userId, projectId)

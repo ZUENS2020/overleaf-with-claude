@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   FormEvent,
+  ChangeEvent,
 } from 'react'
 import { marked } from 'marked'
 import { useProjectContext } from '@/shared/context/project-context'
@@ -35,12 +36,43 @@ type ToolUse = {
   isError?: boolean
 }
 
+type PermissionReq = {
+  kind: 'permission-request'
+  id: string
+  tool: string
+  input: any
+  description?: string
+}
+
+type FileDiff = {
+  kind: 'file-diff'
+  path: string
+  hunks: DiffHunk[]
+  id: string
+}
+
+type DiffHunk = {
+  oldStart: number
+  oldLines: number
+  newStart: number
+  newLines: number
+  content: string
+}
+
+type ImageAttachment = {
+  file: File
+  dataUrl: string
+  id: string
+}
+
 type Message =
-  | { kind: 'user'; text: string; id: string }
+  | { kind: 'user'; text: string; id: string; images?: ImageAttachment[] }
   | { kind: 'assistant'; text: string; id: string }
   | { kind: 'thinking'; text: string; id: string }
   | ToolUse
+  | PermissionReq
   | { kind: 'todos'; id: string; todos: Todo[] }
+  | FileDiff
   | { kind: 'file-changed'; path: string; id: string }
   | { kind: 'error'; message: string; id: string }
   | { kind: 'turn-divider'; id: string }
@@ -49,8 +81,6 @@ function newId() {
   return Math.random().toString(36).slice(2)
 }
 
-// Mode labels per user request: "ask / Plan / Accept edits / Bypass".
-// Values stay as the CLI's --permission-mode accepts them.
 const MODE_OPTIONS: { value: PermissionMode; label: string; hint: string }[] = [
   { value: 'default', label: 'Ask', hint: 'Ask before edits' },
   { value: 'plan', label: 'Plan', hint: 'Read-only planning' },
@@ -58,8 +88,6 @@ const MODE_OPTIONS: { value: PermissionMode; label: string; hint: string }[] = [
   { value: 'bypassPermissions', label: 'Bypass', hint: 'Skip all permission checks' },
 ]
 
-// Built-in slash commands. These are sent to the CLI verbatim; the CLI
-// interprets them. We surface them as a palette for discoverability.
 const SLASH_COMMANDS: { name: string; hint: string }[] = [
   { name: '/clear', hint: 'Clear the conversation' },
   { name: '/compact', hint: 'Summarize history to save context' },
@@ -68,10 +96,38 @@ const SLASH_COMMANDS: { name: string; hint: string }[] = [
   { name: '/cost', hint: 'Show session usage / cost' },
 ]
 
+const FILE_ICONS: Record<string, string> = {
+  tex: 'description',
+  bib: 'library_books',
+  cls: 'code',
+  sty: 'code',
+  md: 'article',
+  txt: 'note',
+  json: 'data_object',
+  yaml: 'data_object',
+  yml: 'data_object',
+  png: 'image',
+  jpg: 'image',
+  jpeg: 'image',
+  gif: 'image',
+  svg: 'image',
+  pdf: 'picture_as_pdf',
+}
+
+function fileIconFor(path: string) {
+  const ext = path.split('.').pop()?.toLowerCase() || ''
+  return FILE_ICONS[ext] || 'insert_drive_file'
+}
+
+function splitPath(path: string): { dir: string; name: string } {
+  const idx = path.lastIndexOf('/')
+  if (idx === -1) return { dir: '', name: path }
+  return { dir: path.slice(0, idx), name: path.slice(idx + 1) }
+}
+
 marked.setOptions({ breaks: true, gfm: true })
 
 function renderMarkdown(src: string): string {
-  // marked returns a string; passing async:false keeps it synchronous.
   return marked.parse(src, { async: false }) as string
 }
 
@@ -295,10 +351,11 @@ function Chat({
   const [error, setError] = useState<string | null>(null)
   const [useCtrlEnter, setUseCtrlEnter] = useState(false)
   const [files, setFiles] = useState<string[]>([])
+  const [images, setImages] = useState<ImageAttachment[]>([])
   const listRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Project files list for @ picker. Loaded lazily on first @-trigger.
   const loadFiles = useCallback(async () => {
     if (files.length > 0) return
     try {
@@ -355,6 +412,20 @@ function Chat({
       const d = JSON.parse(ev.data)
       append({ kind: 'file-changed', path: d.path, id: newId() })
     })
+    es.addEventListener('file-diff', (ev: MessageEvent) => {
+      const d = JSON.parse(ev.data)
+      append({ kind: 'file-diff', path: d.path, hunks: d.hunks || [], id: newId() })
+    })
+    es.addEventListener('permission-request', (ev: MessageEvent) => {
+      const d = JSON.parse(ev.data)
+      append({
+        kind: 'permission-request',
+        id: d.id,
+        tool: d.tool,
+        input: d.input,
+        description: d.description,
+      })
+    })
     es.addEventListener('turn-end', () => {
       setState('idle')
       append({ kind: 'turn-divider', id: newId() })
@@ -377,24 +448,66 @@ function Chat({
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight })
   }, [messages])
 
+  const respondPermission = useCallback(
+    async (id: string, allow: boolean) => {
+      await postJSON(`/project/${projectId}/ai-assistant/permission-response`, {
+        body: { id, allow },
+      })
+      setMessages(curr =>
+        curr.filter(m => !(m.kind === 'permission-request' && m.id === id))
+      )
+    },
+    [projectId]
+  )
+
+  const revertFile = useCallback(
+    async (path: string, msgId: string) => {
+      try {
+        await postJSON(`/project/${projectId}/ai-assistant/revert-file`, {
+          body: { path },
+        })
+        setMessages(curr =>
+          curr.map(m =>
+            m.kind === 'file-diff' && m.id === msgId
+              ? { ...m, hunks: [] }
+              : m
+          )
+        )
+      } catch {}
+    },
+    [projectId]
+  )
+
   const send = useCallback(
     async (overrideText?: string) => {
       const text = (overrideText ?? input).trim()
-      if (!text) return
+      if (!text && images.length === 0) return
       setInput('')
+      const sentImages = [...images]
+      setImages([])
       setError(null)
-      setMessages(curr => [...curr, { kind: 'user', text, id: newId() }])
+      setMessages(curr => [
+        ...curr,
+        { kind: 'user', text, id: newId(), images: sentImages },
+      ])
       setState('running')
       try {
+        const body: any = { text, permissionMode: mode }
+        if (sentImages.length > 0) {
+          body.images = sentImages.map(img => ({
+            mediaType: img.file.type,
+            data: img.dataUrl.split(',')[1],
+          }))
+        }
         await postJSON(`/project/${projectId}/ai-assistant/message`, {
-          body: { text, permissionMode: mode },
+          body,
         })
       } catch (e: any) {
         setError(e?.message || String(e))
         setState('error')
       }
     },
-    [input, projectId, mode]
+    [input, projectId, mode, images]
   )
 
   const stop = useCallback(async () => {
@@ -416,6 +529,25 @@ function Chat({
       onDisconnect()
     }
   }, [onDisconnect])
+
+  const addImages = useCallback((fileList: FileList) => {
+    const newImgs: ImageAttachment[] = []
+    Array.from(fileList).forEach(file => {
+      if (!file.type.startsWith('image/')) return
+      const reader = new FileReader()
+      reader.onload = () => {
+        newImgs.push({ file, dataUrl: reader.result as string, id: newId() })
+        if (newImgs.length === fileList.length) {
+          setImages(prev => [...prev, ...newImgs])
+        }
+      }
+      reader.readAsDataURL(file)
+    })
+  }, [])
+
+  const removeImage = useCallback((id: string) => {
+    setImages(prev => prev.filter(img => img.id !== id))
+  }, [])
 
   return (
     <div className="cc-panel">
@@ -439,7 +571,12 @@ function Chat({
           </div>
         )}
         {messages.map(m => (
-          <MessageNode key={m.id} m={m} />
+          <MessageNode
+            key={m.id}
+            m={m}
+            onPermissionResponse={respondPermission}
+            onRevertFile={revertFile}
+          />
         ))}
       </div>
       <Composer
@@ -453,6 +590,21 @@ function Chat({
         toggleCtrlEnter={() => setUseCtrlEnter(v => !v)}
         onSend={() => send()}
         composerRef={composerRef}
+        fileInputRef={fileInputRef}
+        images={images}
+        onAddImages={addImages}
+        onRemoveImage={removeImage}
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        style={{ display: 'none' }}
+        onChange={e => {
+          if (e.target.files && e.target.files.length > 0) addImages(e.target.files)
+          e.target.value = ''
+        }}
       />
       {error && <div className="cc-error">{error}</div>}
       {state === 'running' && <div className="cc-status">Claude is working…</div>}
@@ -460,10 +612,29 @@ function Chat({
   )
 }
 
-function MessageNode({ m }: { m: Message }) {
+function MessageNode({
+  m,
+  onPermissionResponse,
+  onRevertFile,
+}: {
+  m: Message
+  onPermissionResponse: (id: string, allow: boolean) => void
+  onRevertFile: (path: string, msgId: string) => void
+}) {
   if (m.kind === 'turn-divider') return <div className="cc-turn-divider" />
   if (m.kind === 'user') {
-    return <div className="cc-msg cc-msg-user">{m.text}</div>
+    return (
+      <div className="cc-msg cc-msg-user">
+        {m.text}
+        {m.images && m.images.length > 0 && (
+          <div className="cc-msg-images">
+            {m.images.map(img => (
+              <img key={img.id} src={img.dataUrl} className="cc-msg-thumb" alt="" />
+            ))}
+          </div>
+        )}
+      </div>
+    )
   }
   if (m.kind === 'assistant') {
     return (
@@ -488,9 +659,30 @@ function MessageNode({ m }: { m: Message }) {
     )
   }
   if (m.kind === 'tool-use') return <ToolUseCard m={m} />
+  if (m.kind === 'permission-request') {
+    return (
+      <PermissionCard
+        id={m.id}
+        tool={m.tool}
+        input={m.input}
+        description={m.description}
+        onRespond={onPermissionResponse}
+      />
+    )
+  }
   if (m.kind === 'todos') return <TodosCard todos={m.todos} />
   if (m.kind === 'file-changed') {
     return <div className="cc-file-changed">↪ edited {m.path}</div>
+  }
+  if (m.kind === 'file-diff') {
+    return (
+      <FileDiffCard
+        path={m.path}
+        hunks={m.hunks}
+        id={m.id}
+        onRevert={onRevertFile}
+      />
+    )
   }
   if (m.kind === 'error') return <div className="cc-error">{m.message}</div>
   return null
@@ -516,6 +708,93 @@ function ToolUseCard({ m }: { m: ToolUse }) {
             <pre className="cc-code">{m.result}</pre>
           </>
         )}
+      </div>
+    </details>
+  )
+}
+
+function PermissionCard({
+  id,
+  tool,
+  input,
+  description,
+  onRespond,
+}: {
+  id: string
+  tool: string
+  input: any
+  description?: string
+  onRespond: (id: string, allow: boolean) => void
+}) {
+  const summary = summarizeToolInput(tool, input)
+  return (
+    <div className="cc-permission">
+      <div className="cc-permission-header">
+        <span className="cc-tool-name">{tool}</span>
+        {summary && <span className="cc-permission-path">{summary}</span>}
+      </div>
+      {description && (
+        <div className="cc-permission-desc">{description}</div>
+      )}
+      <details className="cc-permission-details">
+        <summary>Show input</summary>
+        <pre className="cc-code">{JSON.stringify(input, null, 2)}</pre>
+      </details>
+      <div className="cc-permission-actions">
+        <button
+          type="button"
+          className="cc-btn cc-btn-accept"
+          onClick={() => onRespond(id, true)}
+        >
+          Allow
+        </button>
+        <button
+          type="button"
+          className="cc-btn cc-btn-deny"
+          onClick={() => onRespond(id, false)}
+        >
+          Deny
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function FileDiffCard({
+  path,
+  hunks,
+  id,
+  onRevert,
+}: {
+  path: string
+  hunks: DiffHunk[]
+  id: string
+  onRevert: (path: string, msgId: string) => void
+}) {
+  if (hunks.length === 0) {
+    return <div className="cc-file-changed">↪ edited {path}</div>
+  }
+  return (
+    <details className="cc-diff">
+      <summary>
+        <span className="cc-tool-name">Edit</span>
+        <span className="cc-tool-summary">{path}</span>
+      </summary>
+      <div className="cc-diff-body">
+        {hunks.map((h, i) => (
+          <pre key={i} className="cc-diff-hunk">
+            {h.content}
+          </pre>
+        ))}
+        <div className="cc-diff-actions">
+          <button
+            type="button"
+            className="cc-btn cc-btn-accept"
+            onClick={() => onRevert(path, id)}
+          >
+            Revert
+          </button>
+        </div>
       </div>
     </details>
   )
@@ -561,9 +840,9 @@ function TodosCard({ todos }: { todos: Todo[] }) {
 type PickerKind = 'file' | 'slash' | null
 type PickerState = {
   kind: PickerKind
-  triggerIdx: number // position of '@' or '/' in input
+  triggerIdx: number
   query: string
-  cursor: number // currently highlighted item
+  cursor: number
 }
 
 function Composer({
@@ -577,6 +856,10 @@ function Composer({
   toggleCtrlEnter,
   onSend,
   composerRef,
+  fileInputRef,
+  images,
+  onAddImages,
+  onRemoveImage,
 }: {
   input: string
   setInput: (s: string) => void
@@ -588,6 +871,10 @@ function Composer({
   toggleCtrlEnter: () => void
   onSend: () => void
   composerRef: React.RefObject<HTMLTextAreaElement>
+  fileInputRef: React.RefObject<HTMLInputElement>
+  images: ImageAttachment[]
+  onAddImages: (fileList: FileList) => void
+  onRemoveImage: (id: string) => void
 }) {
   const [picker, setPicker] = useState<PickerState>({
     kind: null,
@@ -596,10 +883,8 @@ function Composer({
     cursor: 0,
   })
 
-  // Recompute picker state from input + cursor whenever input changes.
   const recomputePicker = useCallback(
     (value: string, caretPos: number) => {
-      // Walk backwards from caret to find an @ or / that starts a token.
       let i = caretPos - 1
       let triggerIdx = -1
       let kind: PickerKind = null
@@ -607,7 +892,6 @@ function Composer({
         const ch = value[i]
         if (ch === '\n' || ch === ' ' || ch === '\t') break
         if (ch === '@' || ch === '/') {
-          // Token must be at start of input or preceded by whitespace.
           const before = i === 0 ? '' : value[i - 1]
           if (i === 0 || before === ' ' || before === '\n' || before === '\t') {
             triggerIdx = i
@@ -631,16 +915,20 @@ function Composer({
   const items = useMemo(() => {
     if (picker.kind === 'file') {
       const q = picker.query.toLowerCase()
-      return files
+      const filtered = files
         .filter(p => p.toLowerCase().includes(q))
         .slice(0, 8)
-        .map(p => ({ value: p, hint: '' }))
+      return filtered.map(p => {
+        const { dir, name } = splitPath(p)
+        const icon = fileIconFor(p)
+        return { value: p, hint: dir, icon }
+      })
     }
     if (picker.kind === 'slash') {
       const q = picker.query.toLowerCase()
       return SLASH_COMMANDS.filter(c =>
         c.name.slice(1).toLowerCase().startsWith(q)
-      ).map(c => ({ value: c.name, hint: c.hint }))
+      ).map(c => ({ value: c.name, hint: c.hint, icon: 'terminal' }))
     }
     return []
   }, [picker.kind, picker.query, files])
@@ -699,7 +987,7 @@ function Composer({
     }
   }
 
-  const onChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+  const onChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
     const v = e.target.value
     setInput(v)
     recomputePicker(v, e.target.selectionStart || 0)
@@ -720,6 +1008,22 @@ function Composer({
           </button>
         ))}
       </div>
+      {images.length > 0 && (
+        <div className="cc-attachments">
+          {images.map(img => (
+            <div key={img.id} className="cc-attachment">
+              <img src={img.dataUrl} className="cc-attachment-thumb" alt="" />
+              <button
+                type="button"
+                className="cc-attachment-remove"
+                onClick={() => onRemoveImage(img.id)}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="cc-composer-inner">
         {picker.kind && items.length > 0 && (
           <div className="cc-picker">
@@ -733,10 +1037,11 @@ function Composer({
                   setPicker(p => ({ ...p, cursor: i }))
                 }
               >
-                <span className="cc-picker-value">{it.value}</span>
-                {it.hint && (
-                  <span className="cc-picker-hint">{it.hint}</span>
-                )}
+                <span className="material-symbols cc-picker-icon">{it.icon}</span>
+                <span className="cc-picker-text">
+                  <span className="cc-picker-name">{it.value.split('/').pop()}</span>
+                  {it.hint && <span className="cc-picker-hint">{it.hint}</span>}
+                </span>
               </button>
             ))}
           </div>
@@ -758,6 +1063,15 @@ function Composer({
           <button
             type="button"
             className="cc-icon-btn cc-icon-btn-sm"
+            onClick={() => fileInputRef.current?.click()}
+            title="Attach image"
+            aria-label="Attach image"
+          >
+            📎
+          </button>
+          <button
+            type="button"
+            className="cc-icon-btn cc-icon-btn-sm"
             onClick={toggleCtrlEnter}
             title={
               useCtrlEnter
@@ -771,7 +1085,7 @@ function Composer({
             type="button"
             className="cc-btn cc-btn-primary cc-btn-send"
             onClick={onSend}
-            disabled={!input.trim()}
+            disabled={!input.trim() && images.length === 0}
           >
             Send
           </button>

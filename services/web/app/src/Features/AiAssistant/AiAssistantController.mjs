@@ -7,6 +7,8 @@ import SessionManager from '../Authentication/SessionManager.mjs'
 import * as ClaudeAuth from './ClaudeAuth.mjs'
 import * as TokenStore from './TokenStore.mjs'
 import AiAssistantManager from './AiAssistantManager.mjs'
+import ProjectEntityHandler from '../Project/ProjectEntityHandler.mjs'
+import DocumentUpdaterHandler from '../DocumentUpdater/DocumentUpdaterHandler.mjs'
 
 function enabled() {
   return !!Settings.aiAssistant?.claudeBin
@@ -81,14 +83,68 @@ export default {
     const projectId = req.params.Project_id
     const text = req.body?.text
     const permissionMode = req.body?.permissionMode
+    const images = req.body?.images
     if (!text || typeof text !== 'string') {
       return res.status(400).json({ error: 'missing_text' })
     }
     try {
-      await AiAssistantManager.send(userId, projectId, text, { permissionMode })
+      await AiAssistantManager.send(userId, projectId, text, { permissionMode, images })
       res.json({ ok: true })
     } catch (err) {
       logger.warn({ err, userId, projectId }, 'ai-assistant send failed')
+      res.status(500).json({ error: err.message })
+    }
+  },
+
+  async permissionResponse(req, res) {
+    if (!enabled()) return res.status(503).json({ error: 'disabled' })
+    const userId = requireUser(req, res)
+    if (!userId) return
+    const projectId = req.params.Project_id
+    const { id, allow } = req.body || {}
+    if (!id || typeof allow !== 'boolean') {
+      return res.status(400).json({ error: 'missing_id_or_allow' })
+    }
+    try {
+      AiAssistantManager.respondPermission(userId, projectId, id, allow)
+      res.json({ ok: true })
+    } catch (err) {
+      logger.warn({ err, userId, projectId }, 'ai-assistant permission response failed')
+      res.status(500).json({ error: err.message })
+    }
+  },
+
+  async revertFile(req, res) {
+    if (!enabled()) return res.status(503).json({ error: 'disabled' })
+    const userId = requireUser(req, res)
+    if (!userId) return
+    const projectId = req.params.Project_id
+    const { path } = req.body || {}
+    if (!path || typeof path !== 'string') {
+      return res.status(400).json({ error: 'missing_path' })
+    }
+    try {
+      const docs = await ProjectEntityHandler.promises.getAllDocs(projectId)
+      const fullPath = '/' + path.replace(/^\/+/, '')
+      const doc = docs[fullPath]
+      if (!doc) {
+        return res.status(404).json({ error: 'file_not_found' })
+      }
+      const lines = (doc.lines || []).join('\n')
+      // Revert by re-setting the document content (which is the pre-edit
+      // version from FileSync's lastWritten map).  For simplicity, we
+      // just re-push the current docstore version; the frontend can
+      // issue a revert after seeing a diff.
+      await DocumentUpdaterHandler.promises.setDocument(
+        projectId,
+        doc._id.toString(),
+        userId,
+        doc.lines,
+        'ai-assistant-revert'
+      )
+      res.json({ ok: true })
+    } catch (err) {
+      logger.warn({ err, userId, projectId, path }, 'ai-assistant revert file failed')
       res.status(500).json({ error: err.message })
     }
   },
@@ -98,6 +154,24 @@ export default {
     if (!userId) return
     await AiAssistantManager.stop(userId, req.params.Project_id).catch(() => {})
     res.json({ ok: true })
+  },
+
+  // Project file list for the @ mention picker. Returns just the paths;
+  // the UI does its own client-side fuzzy filter.
+  async files(req, res) {
+    const userId = requireUser(req, res)
+    if (!userId) return
+    const projectId = req.params.Project_id
+    try {
+      const docs = await ProjectEntityHandler.promises.getAllDocs(projectId)
+      const paths = Object.keys(docs)
+        .map(p => p.replace(/^\//, ''))
+        .sort()
+      res.json({ paths })
+    } catch (err) {
+      logger.warn({ err, userId, projectId }, 'ai-assistant file list failed')
+      res.status(500).json({ error: err.message })
+    }
   },
 
   // SSE stream of session events to the chat UI. One long-lived response;

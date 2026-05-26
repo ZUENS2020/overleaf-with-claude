@@ -42,5 +42,20 @@ export default {
       AuthorizationMiddleware.ensureUserCanReadProject,
       AiAssistantController.stop
     )
+    webRouter.get(
+      '/project/:Project_id/ai-assistant/files',
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      AiAssistantController.files
+    )
+    webRouter.post(
+      '/project/:Project_id/ai-assistant/permission-response',
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      AiAssistantController.permissionResponse
+    )
+    webRouter.post(
+      '/project/:Project_id/ai-assistant/revert-file',
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      AiAssistantController.revertFile
+    )
   },
 }

@@ -53,7 +53,7 @@ export default {
           lines,
           'ai-assistant'
         )
-        onFileChanged?.(relPath)
+        onFileChanged?.(relPath, buf)
       } catch (err) {
         if (err.code === 'ENOENT') return
         logger.warn({ err, relPath }, 'ai-assistant file flush failed')
