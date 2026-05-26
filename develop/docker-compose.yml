@@ -155,6 +155,11 @@ services:
     volumes:
       - sharelatex-data:/var/lib/overleaf
       - web-data:/overleaf/services/web/data
+      # Bind-mount source so backend changes take effect with a container
+      # restart (no image rebuild needed).
+      - ../services/web/app:/overleaf/services/web/app
+      - ../services/web/config:/overleaf/services/web/config
+      - ../services/web/locales:/overleaf/services/web/locales
     depends_on:
       - mongo
       - redis
