@@ -69,6 +69,13 @@ RUN cd /overleaf && yarn workspaces focus @overleaf/web overleaf
 # the dev is suitable for running tests
 FROM deps AS dev
 
+# Install the claude CLI globally so AiAssistantManager can spawn it.
+# Pinned via package.json in the install command line for reproducibility.
+USER root
+RUN npm install -g @anthropic-ai/claude-code@latest \
+    && chown -R node:node /usr/local/lib/node_modules/@anthropic-ai
+USER node
+
 ARG SENTRY_RELEASE
 ENV SENTRY_RELEASE=$SENTRY_RELEASE
 COPY libraries/access-token-encryptor/ /overleaf/libraries/access-token-encryptor/

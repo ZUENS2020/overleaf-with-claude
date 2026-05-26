@@ -117,29 +117,21 @@ const httpPermissionsPolicy = {
 
 const safeCompilers = ['xelatex', 'pdflatex', 'latex', 'lualatex']
 
-// AI assistant (Claude Code) per-user container orchestration. Enabled when
-// AI_SESSION_IMAGE is set; otherwise the feature is dormant and the rail
-// entry won't be shown. Sessions are user-managed — they stay running until
-// the user clicks "Stop session" or the web process restarts.
-const aiSession = process.env.AI_SESSION_IMAGE
-  ? {
-      image: process.env.AI_SESSION_IMAGE,
-      network: process.env.AI_SESSION_NETWORK || 'overleaf',
-      dockerSocket: process.env.AI_SESSION_DOCKER_SOCKET || undefined,
-      containerPort: intFromEnv('AI_SESSION_CONTAINER_PORT', 8080),
-      memoryMb: intFromEnv('AI_SESSION_MEMORY_MB', 1024),
-      cpus: parseFloat(process.env.AI_SESSION_CPUS || '1'),
-      unhealthyAfterMs: intFromEnv('AI_SESSION_UNHEALTHY_AFTER_MS', 60_000),
-      claudeVolumePrefix:
-        process.env.AI_SESSION_CLAUDE_VOLUME_PREFIX || 'overleaf-claude-',
-      webInternalUrl: process.env.AI_SESSION_WEB_INTERNAL_URL || undefined,
-    }
-  : null
+// AI assistant: lightweight in-process Claude Code. Enabled when both a
+// claude CLI binary path and an encryption key for OAuth tokens are set.
+const aiAssistant =
+  process.env.AI_ASSISTANT_CLAUDE_BIN && process.env.AI_ASSISTANT_TOKEN_KEY
+    ? {
+        claudeBin: process.env.AI_ASSISTANT_CLAUDE_BIN,
+        tokenKey: process.env.AI_ASSISTANT_TOKEN_KEY,
+        idleMs: intFromEnv('AI_ASSISTANT_IDLE_MS', 600_000),
+      }
+    : null
 
 module.exports = {
   env: 'server-ce',
 
-  aiSession,
+  aiAssistant,
 
   limits: {
     httpGlobalAgentMaxSockets: 300,

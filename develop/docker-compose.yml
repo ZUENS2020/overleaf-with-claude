@@ -11,9 +11,6 @@ volumes:
   history-v1-buckets:
 
 networks:
-  # Explicit name so per-user Claude Code containers (spawned by web at
-  # runtime) can be attached to the same network regardless of the compose
-  # project name. AI_SESSION_NETWORK in dev.env must match this.
   default:
     name: overleaf
 
@@ -158,15 +155,6 @@ services:
     volumes:
       - sharelatex-data:/var/lib/overleaf
       - web-data:/overleaf/services/web/data
-      # AiSessionManager talks to the host's Docker daemon to spawn per-user
-      # Claude Code containers. Comment this out (and unset AI_SESSION_IMAGE
-      # in dev.env) to disable the feature.
-      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
-    # Web runs as uid 1000; the docker socket is root:docker (gid varies by
-    # host). Add the host's docker gid as a supplementary group so dockerode
-    # can connect. Override via DOCKER_GID env if your host differs.
-    group_add:
-      - "${DOCKER_GID:-983}"
     depends_on:
       - mongo
       - redis
@@ -180,19 +168,6 @@ services:
       - notifications
       - project-history
       - real-time
-
-  # Build-only service: produces the per-user Claude Code container image
-  # (overleaf/claude-ide:dev) that AiSessionManager spawns on demand.
-  # `bin/build` / `docker compose up` build the image automatically; the
-  # container itself exits immediately (entrypoint=true) so it stays as
-  # "Exited (0)" — we only need the image to exist on the host.
-  claude-ide:
-    image: overleaf/claude-ide:dev
-    build:
-      context: ..
-      dockerfile: services/claude-ide-container/Dockerfile
-    entrypoint: ["true"]
-    restart: "no"
 
   webpack:
     build:
