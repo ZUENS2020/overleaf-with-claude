@@ -651,19 +651,31 @@ function Chat({
     }
   }, [onDisconnect])
 
-  const addImages = useCallback((fileList: FileList) => {
-    const newImgs: ImageAttachment[] = []
-    Array.from(fileList).forEach(file => {
-      if (!file.type.startsWith('image/')) return
-      const reader = new FileReader()
-      reader.onload = () => {
-        newImgs.push({ file, dataUrl: reader.result as string, id: newId() })
-        if (newImgs.length === fileList.length) {
-          setImages(prev => [...prev, ...newImgs])
-        }
-      }
-      reader.readAsDataURL(file)
-    })
+  const addImages = useCallback(async (fileList: FileList) => {
+    // Read each image to a data URL in parallel. The previous version
+    // tracked completion with `newImgs.length === fileList.length`,
+    // which silently deadlocked when any file was filtered out (non-
+    // image) or errored — the setImages call then never fired.
+    const reads = Array.from(fileList)
+      .filter(f => f.type.startsWith('image/'))
+      .map(
+        file =>
+          new Promise<ImageAttachment | null>(resolve => {
+            const reader = new FileReader()
+            reader.onload = () =>
+              resolve({
+                file,
+                dataUrl: reader.result as string,
+                id: newId(),
+              })
+            reader.onerror = () => resolve(null)
+            reader.readAsDataURL(file)
+          })
+      )
+    const done = (await Promise.all(reads)).filter(
+      (x): x is ImageAttachment => x !== null
+    )
+    if (done.length > 0) setImages(prev => [...prev, ...done])
   }, [])
 
   const removeImage = useCallback((id: string) => {
@@ -676,7 +688,16 @@ function Chat({
         <SessionList
           sessions={sessions}
           activeId={sessionId}
-          onSelect={(id) => {
+          onSelect={async id => {
+            // Backend keeps ONE CLI subprocess per (user, project), so
+            // switching session must kill it — otherwise the next
+            // message goes to the previous conversation's context.
+            // Conversation history is not persisted yet (TODO), so this
+            // is effectively "start fresh under the chosen title".
+            try {
+              await postJSON(`/project/${projectId}/ai-assistant/stop`)
+            } catch {}
+            setState('idle')
             setSessionId(id)
             setMessages([])
             setShowSessions(false)

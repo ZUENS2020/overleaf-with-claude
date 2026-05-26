@@ -24,7 +24,11 @@ const PROMPT_TIMEOUT_MS = 30_000
 const SUBMIT_TIMEOUT_MS = 60_000
 
 function urlFromOutput(text) {
-  const m = text.match(/(https:\/\/claude\.com\/cai\/oauth\/authorize\?[^\s]+)/)
+  // Accept any host that ends in /oauth/authorize so we don't break
+  // when Anthropic moves the endpoint (already happened once:
+  // claude.ai/oauth/authorize → claude.com/cai/oauth/authorize), and
+  // so staging hosts (claude-ai.staging.ant.dev, etc) work too.
+  const m = text.match(/(https:\/\/[^\s)>'"]+\/oauth\/authorize\?[^\s)>'"]+)/)
   return m ? m[1] : null
 }
 

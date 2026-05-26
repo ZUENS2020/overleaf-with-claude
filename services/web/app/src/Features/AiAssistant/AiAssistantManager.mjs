@@ -158,23 +158,16 @@ class Session {
         logger.debug({ stderr: s.slice(0, 500) }, 'claude stderr')
       })
 
-      // File watcher → DocumentUpdater
+      // File watcher → DocumentUpdater. Only the lightweight
+      // file-changed notice is emitted; the diff card stays disabled
+      // until FileSync starts snapshotting pre-edit content so the
+      // revert button can actually do something.
       try {
         this.fileSync = await FileSync.start({
           userId: this.userId,
           projectId: this.projectId,
           cwd: this.cwd,
-          onFileChanged: (path, content) => {
-            this.emit('file-changed', { path })
-            // Also emit a simplified diff event if we have content.
-            // The frontend can render a "revert" option.
-            if (content) {
-              this.emit('file-diff', {
-                path,
-                hunks: [{ content: '(diff not available in MVP)' }],
-              })
-            }
-          },
+          onFileChanged: path => this.emit('file-changed', { path }),
         })
       } catch (err) {
         logger.warn({ err }, 'file sync start failed; continuing without it')
@@ -229,11 +222,11 @@ class Session {
         cost: obj.total_cost_usd || null,
       })
     }
-    // The CLI may emit permission-request events when running in
-    // modes that require user approval for certain tool calls.
-    if (obj.type === 'permission_request' || (obj.type === 'assistant' && obj.message?.content)) {
-      // Handle inline permission_request objects
-    }
+    // The CLI may emit permission_request events when running in modes
+    // that require user approval. Untested against actual --print
+    // stream-json output (the CLI may never emit these in
+    // non-interactive mode); kept defensive so if they ever appear the
+    // UI receives them.
     if (obj.type === 'permission_request') {
       this.emit('permission-request', {
         id: obj.id || obj.request_id || newId(),

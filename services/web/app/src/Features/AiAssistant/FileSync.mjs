@@ -8,7 +8,7 @@
 
 import { watch } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
-import { relative, join } from 'node:path'
+import { join } from 'node:path'
 import logger from '@overleaf/logger'
 import DocumentUpdaterHandler from '../DocumentUpdater/DocumentUpdaterHandler.mjs'
 import ProjectEntityHandler from '../Project/ProjectEntityHandler.mjs'
@@ -53,7 +53,7 @@ export default {
           lines,
           'ai-assistant'
         )
-        onFileChanged?.(relPath, buf)
+        onFileChanged?.(relPath)
       } catch (err) {
         if (err.code === 'ENOENT') return
         logger.warn({ err, relPath }, 'ai-assistant file flush failed')

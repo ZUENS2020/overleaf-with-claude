@@ -185,6 +185,9 @@ export default {
       const session = await SessionStore.create(userId, projectId, title)
       res.json({ id: session.id, title: session.title, createdAt: session.createdAt, updatedAt: session.updatedAt })
     } catch (err) {
+      if (err.code === 'INVALID_ID') {
+        return res.status(400).json({ error: err.message })
+      }
       logger.warn({ err, userId, projectId }, 'ai-assistant create session failed')
       res.status(500).json({ error: err.message })
     }
@@ -199,6 +202,9 @@ export default {
       const sessions = await SessionStore.list(userId, projectId)
       res.json({ sessions })
     } catch (err) {
+      if (err.code === 'INVALID_ID') {
+        return res.status(400).json({ error: err.message })
+      }
       logger.warn({ err, userId, projectId }, 'ai-assistant list sessions failed')
       res.status(500).json({ error: err.message })
     }
@@ -209,14 +215,21 @@ export default {
     const userId = requireUser(req, res)
     if (!userId) return
     const sessionId = req.params.sessionId
+    const projectId = req.params.Project_id
     const { title } = req.body || {}
     if (!title || typeof title !== 'string') {
       return res.status(400).json({ error: 'missing_title' })
     }
     try {
-      await SessionStore.update(sessionId, userId, { title })
+      const ok = await SessionStore.update(sessionId, userId, projectId, {
+        title,
+      })
+      if (!ok) return res.status(404).json({ error: 'not_found' })
       res.json({ ok: true })
     } catch (err) {
+      if (err.code === 'INVALID_ID') {
+        return res.status(400).json({ error: err.message })
+      }
       logger.warn({ err, userId, sessionId }, 'ai-assistant rename session failed')
       res.status(500).json({ error: err.message })
     }
@@ -227,10 +240,15 @@ export default {
     const userId = requireUser(req, res)
     if (!userId) return
     const sessionId = req.params.sessionId
+    const projectId = req.params.Project_id
     try {
-      await SessionStore.remove(sessionId, userId)
+      const ok = await SessionStore.remove(sessionId, userId, projectId)
+      if (!ok) return res.status(404).json({ error: 'not_found' })
       res.json({ ok: true })
     } catch (err) {
+      if (err.code === 'INVALID_ID') {
+        return res.status(400).json({ error: err.message })
+      }
       logger.warn({ err, userId, sessionId }, 'ai-assistant delete session failed')
       res.status(500).json({ error: err.message })
     }
