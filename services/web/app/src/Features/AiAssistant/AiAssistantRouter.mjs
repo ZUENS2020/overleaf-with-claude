@@ -57,5 +57,27 @@ export default {
       AuthorizationMiddleware.ensureUserCanReadProject,
       AiAssistantController.revertFile
     )
+
+    // Session management
+    webRouter.get(
+      '/project/:Project_id/ai-assistant/sessions',
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      AiAssistantController.listSessions
+    )
+    webRouter.post(
+      '/project/:Project_id/ai-assistant/sessions',
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      AiAssistantController.createSession
+    )
+    webRouter.post(
+      '/project/:Project_id/ai-assistant/sessions/:sessionId/rename',
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      AiAssistantController.renameSession
+    )
+    webRouter.delete(
+      '/project/:Project_id/ai-assistant/sessions/:sessionId',
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      AiAssistantController.deleteSession
+    )
   },
 }

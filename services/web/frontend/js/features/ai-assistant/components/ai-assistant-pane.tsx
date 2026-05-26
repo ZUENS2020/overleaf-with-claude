@@ -9,7 +9,7 @@ import {
 } from 'react'
 import { marked } from 'marked'
 import { useProjectContext } from '@/shared/context/project-context'
-import { getJSON, postJSON } from '@/infrastructure/fetch-json'
+import { getJSON, postJSON, deleteJSON } from '@/infrastructure/fetch-json'
 import withErrorBoundary from '@/infrastructure/error-boundary'
 import claudeLogoUrl from '../assets/claude-logo.svg'
 
@@ -81,11 +81,11 @@ function newId() {
   return Math.random().toString(36).slice(2)
 }
 
-const MODE_OPTIONS: { value: PermissionMode; label: string; hint: string }[] = [
-  { value: 'default', label: 'Ask', hint: 'Ask before edits' },
-  { value: 'plan', label: 'Plan', hint: 'Read-only planning' },
-  { value: 'acceptEdits', label: 'Accept edits', hint: 'Auto-accept file edits' },
-  { value: 'bypassPermissions', label: 'Bypass', hint: 'Skip all permission checks' },
+const MODE_OPTIONS: { value: PermissionMode; label: string }[] = [
+  { value: 'default', label: 'Ask' },
+  { value: 'plan', label: 'Plan' },
+  { value: 'acceptEdits', label: 'Accept edits' },
+  { value: 'bypassPermissions', label: 'Bypass' },
 ]
 
 const SLASH_COMMANDS: { name: string; hint: string }[] = [
@@ -171,18 +171,27 @@ export const AiAssistantPane = () => {
   )
 }
 
+type SessionInfo = {
+  id: string
+  title: string
+  createdAt: string
+  updatedAt: string
+}
+
 function PanelHeader({
   connectionState,
   account,
   onStop,
   onNew,
   onDisconnect,
+  onToggleSessions,
 }: {
   connectionState: 'loading' | 'disabled' | 'idle' | 'running' | 'error'
   account?: string | null
   onStop?: () => void
   onNew?: () => void
   onDisconnect?: () => void
+  onToggleSessions?: () => void
 }) {
   const dotClass =
     connectionState === 'running'
@@ -201,6 +210,17 @@ function PanelHeader({
       </div>
       <div className="cc-header-actions">
         {account && <span className="cc-header-account">{account}</span>}
+        {onToggleSessions && (
+          <button
+            type="button"
+            className="cc-icon-btn"
+            onClick={onToggleSessions}
+            title="Conversations"
+            aria-label="Conversations"
+          >
+            ☰
+          </button>
+        )}
         {onNew && (
           <button
             type="button"
@@ -335,6 +355,69 @@ function ConnectClaude({ onConnected }: { onConnected: () => void }) {
   )
 }
 
+function SessionList({
+  sessions,
+  activeId,
+  onSelect,
+  onDelete,
+  onClose,
+}: {
+  sessions: SessionInfo[]
+  activeId: string | null
+  onSelect: (id: string) => void
+  onDelete: (id: string) => void
+  onClose: () => void
+}) {
+  const now = Date.now()
+  const today = new Date(now).toDateString()
+  const yesterday = new Date(now - 86400000).toDateString()
+  const groups: { label: string; items: SessionInfo[] }[] = []
+  const buckets = new Map<string, SessionInfo[]>()
+  for (const s of sessions) {
+    const d = new Date(s.updatedAt).toDateString()
+    if (!buckets.has(d)) buckets.set(d, [])
+    buckets.get(d)!.push(s)
+  }
+  for (const [d, items] of buckets) {
+    const label =
+      d === today ? 'Today' : d === yesterday ? 'Yesterday' : d
+    groups.push({ label, items })
+  }
+  return (
+    <div className="cc-session-list">
+      <div className="cc-session-list-header">
+        <span>Conversations</span>
+        <button type="button" className="cc-icon-btn" onClick={onClose}>✕</button>
+      </div>
+      {groups.map(g => (
+        <div key={g.label} className="cc-session-group">
+          <div className="cc-session-group-label">{g.label}</div>
+          {g.items.map(s => (
+            <div
+              key={s.id}
+              className={`cc-session-item ${s.id === activeId ? 'cc-session-item-active' : ''}`}
+              onClick={() => onSelect(s.id)}
+            >
+              <span className="cc-session-item-title">{s.title}</span>
+              <button
+                type="button"
+                className="cc-session-item-delete"
+                onClick={e => { e.stopPropagation(); onDelete(s.id) }}
+                title="Delete"
+              >
+                🗑
+              </button>
+            </div>
+          ))}
+        </div>
+      ))}
+      {sessions.length === 0 && (
+        <div className="cc-session-empty">No conversations yet</div>
+      )}
+    </div>
+  )
+}
+
 function Chat({
   projectId,
   account,
@@ -355,6 +438,9 @@ function Chat({
   const listRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [sessions, setSessions] = useState<SessionInfo[]>([])
+  const [showSessions, setShowSessions] = useState(false)
 
   const loadFiles = useCallback(async () => {
     if (files.length > 0) return
@@ -365,6 +451,17 @@ function Chat({
       setFiles(r.paths || [])
     } catch {}
   }, [files.length, projectId])
+
+  const loadSessions = useCallback(async () => {
+    try {
+      const r = await getJSON<{ sessions: SessionInfo[] }>(
+        `/project/${projectId}/ai-assistant/sessions`
+      )
+      setSessions(r.sessions || [])
+    } catch {}
+  }, [projectId])
+
+  useEffect(() => { loadSessions() }, [loadSessions])
 
   useEffect(() => {
     const es = new EventSource(`/project/${projectId}/ai-assistant/stream`)
@@ -502,12 +599,27 @@ function Chat({
         await postJSON(`/project/${projectId}/ai-assistant/message`, {
           body,
         })
+        if (!sessionId) {
+          try {
+            const sr = await postJSON(`/project/${projectId}/ai-assistant/sessions`, {
+              body: { title: text.slice(0, 80) },
+            })
+            setSessionId(sr.id)
+            loadSessions()
+          } catch {}
+        } else if (messages.length === 0) {
+          postJSON(
+            `/project/${projectId}/ai-assistant/sessions/${sessionId}/rename`,
+            { body: { title: text.slice(0, 80) } }
+          ).catch(() => {})
+          loadSessions()
+        }
       } catch (e: any) {
         setError(e?.message || String(e))
         setState('error')
       }
     },
-    [input, projectId, mode, images]
+    [input, projectId, mode, images, sessionId, messages.length, loadSessions]
   )
 
   const stop = useCallback(async () => {
@@ -520,7 +632,16 @@ function Chat({
   const newConversation = useCallback(async () => {
     await stop()
     setMessages([])
-  }, [stop])
+    try {
+      const r = await postJSON(`/project/${projectId}/ai-assistant/sessions`, {
+        body: { title: 'New conversation' },
+      })
+      setSessionId(r.id)
+      loadSessions()
+    } catch {
+      setSessionId(null)
+    }
+  }, [stop, projectId, loadSessions])
 
   const disconnect = useCallback(async () => {
     try {
@@ -551,12 +672,35 @@ function Chat({
 
   return (
     <div className="cc-panel">
+      {showSessions && (
+        <SessionList
+          sessions={sessions}
+          activeId={sessionId}
+          onSelect={(id) => {
+            setSessionId(id)
+            setMessages([])
+            setShowSessions(false)
+          }}
+          onDelete={async (id) => {
+            try {
+              await deleteJSON(`/project/${projectId}/ai-assistant/sessions/${id}`)
+              if (id === sessionId) {
+                setSessionId(null)
+                setMessages([])
+              }
+              loadSessions()
+            } catch {}
+          }}
+          onClose={() => setShowSessions(false)}
+        />
+      )}
       <PanelHeader
         connectionState={state}
         account={account}
         onNew={messages.length > 0 || state === 'running' ? newConversation : undefined}
         onStop={state === 'running' ? stop : undefined}
         onDisconnect={disconnect}
+        onToggleSessions={() => setShowSessions(v => !v)}
       />
       <div className="cc-messages" ref={listRef}>
         {messages.length === 0 && (
@@ -1004,7 +1148,6 @@ function Composer({
             onClick={() => setMode(o.value)}
           >
             <span className="cc-mode-card-label">{o.label}</span>
-            <span className="cc-mode-card-hint">{o.hint}</span>
           </button>
         ))}
       </div>

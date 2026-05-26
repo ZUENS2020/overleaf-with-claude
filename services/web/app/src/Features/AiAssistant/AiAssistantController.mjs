@@ -9,6 +9,7 @@ import * as TokenStore from './TokenStore.mjs'
 import AiAssistantManager from './AiAssistantManager.mjs'
 import ProjectEntityHandler from '../Project/ProjectEntityHandler.mjs'
 import DocumentUpdaterHandler from '../DocumentUpdater/DocumentUpdaterHandler.mjs'
+import SessionStore from './SessionStore.mjs'
 
 function enabled() {
   return !!Settings.aiAssistant?.claudeBin
@@ -170,6 +171,67 @@ export default {
       res.json({ paths })
     } catch (err) {
       logger.warn({ err, userId, projectId }, 'ai-assistant file list failed')
+      res.status(500).json({ error: err.message })
+    }
+  },
+
+  async createSession(req, res) {
+    if (!enabled()) return res.status(503).json({ error: 'disabled' })
+    const userId = requireUser(req, res)
+    if (!userId) return
+    const projectId = req.params.Project_id
+    const { title } = req.body || {}
+    try {
+      const session = await SessionStore.create(userId, projectId, title)
+      res.json({ id: session.id, title: session.title, createdAt: session.createdAt, updatedAt: session.updatedAt })
+    } catch (err) {
+      logger.warn({ err, userId, projectId }, 'ai-assistant create session failed')
+      res.status(500).json({ error: err.message })
+    }
+  },
+
+  async listSessions(req, res) {
+    if (!enabled()) return res.status(503).json({ error: 'disabled' })
+    const userId = requireUser(req, res)
+    if (!userId) return
+    const projectId = req.params.Project_id
+    try {
+      const sessions = await SessionStore.list(userId, projectId)
+      res.json({ sessions })
+    } catch (err) {
+      logger.warn({ err, userId, projectId }, 'ai-assistant list sessions failed')
+      res.status(500).json({ error: err.message })
+    }
+  },
+
+  async renameSession(req, res) {
+    if (!enabled()) return res.status(503).json({ error: 'disabled' })
+    const userId = requireUser(req, res)
+    if (!userId) return
+    const sessionId = req.params.sessionId
+    const { title } = req.body || {}
+    if (!title || typeof title !== 'string') {
+      return res.status(400).json({ error: 'missing_title' })
+    }
+    try {
+      await SessionStore.update(sessionId, userId, { title })
+      res.json({ ok: true })
+    } catch (err) {
+      logger.warn({ err, userId, sessionId }, 'ai-assistant rename session failed')
+      res.status(500).json({ error: err.message })
+    }
+  },
+
+  async deleteSession(req, res) {
+    if (!enabled()) return res.status(503).json({ error: 'disabled' })
+    const userId = requireUser(req, res)
+    if (!userId) return
+    const sessionId = req.params.sessionId
+    try {
+      await SessionStore.remove(sessionId, userId)
+      res.json({ ok: true })
+    } catch (err) {
+      logger.warn({ err, userId, sessionId }, 'ai-assistant delete session failed')
       res.status(500).json({ error: err.message })
     }
   },

@@ -24,34 +24,40 @@ edit project files.
 ┌────────────────────┐         ┌───────────────────────────────┐
 │  Overleaf frontend │         │           web service         │
 │                    │         │                               │
-│  ChatPane (React)  │◀────────┤  socket.io  ai-assistant ns   │
-│  CodeMirror diff   │         │  ──────────────────────────   │
-│  preview           │         │  AiAssistantManager           │
-└────────────────────┘         │    ↓ spawn / stream           │
-                               │  claude (CLI subprocess)      │
-                               │    cwd = /tmp/ai/<projectId>/ │
+│  ChatPane (React)  │◀──SSE──┤  AiAssistantController        │
+│  SessionList       │         │  AiAssistantManager            │
+│  Permission popup  │         │  SessionStore (MongoDB)        │
+│  Inline diffs      │         │    ↓ spawn / stream           │
+│  @ / menus         │         │  claude (CLI subprocess)      │
+└────────────────────┘         │    cwd = /tmp/ai/<projectId>/ │
                                │    tools: Read/Edit/Bash...   │
                                │    ↓ writes files             │
                                │  FileSync                     │
                                │    ↓ DocumentUpdater + filestore
                                └───────────────────────────────┘
-                                              │
-                                              ▼
-                                       Overleaf docstore
-                                       (live updates to CodeMirror
-                                        via existing real-time pipeline)
+                                               │
+                                               ▼
+                                        Overleaf docstore
+                                        (live updates to CodeMirror
+                                         via existing real-time pipeline)
 ```
 
 ### Components
 
 **`AiAssistantManager`** (services/web)
 - One subprocess per `(userId, projectId)` pair
-- Spawns `claude --output-format stream-json --input-format stream-json` (or
-  Agent SDK if simpler) with `cwd = /tmp/ai/<projectId>/`
+- Spawns `claude --output-format stream-json --input-format stream-json` with
+  `cwd = /tmp/ai/<projectId>/`
 - Maintains map: `projectId → { proc, stdin, lastActivity }`
 - Idle timeout (default 10 min) kills the subprocess
 - On session start: hydrate `cwd` by copying project files out of docstore via
   `ProjectEntityHandler`
+
+**`SessionStore`** (services/web, MongoDB collection `aiAssistantSessions`)
+- Stores session metadata: `userId, projectId, title, createdAt, updatedAt`
+- CRUD API: create, list, rename, delete
+- Used by frontend SessionList to switch between conversations
+- Titles auto-generated from first message text
 
 **`FileSync`**
 - Watches the subprocess `cwd` via `chokidar`
@@ -61,88 +67,106 @@ edit project files.
 - Inverse direction (user edits in Overleaf → mirror to `cwd`) handled by
   subscribing to docstore updates for the project
 
-**Socket.io `ai-assistant` namespace** (web's socket.io, NOT real-time —
-keeps auth in one place)
-- Client → server events
-  - `start { projectId }` — boot subprocess if not running
-  - `prompt { text }` — write to subprocess stdin
-  - `stop` — kill subprocess
-- Server → client events
-  - `assistant-text { delta }` — streamed model output
-  - `tool-use { name, input }` — surfaced for UI
-  - `tool-result { name, output }`
-  - `file-changed { path }` — UI can show "Claude edited foo.tex"
-  - `status { state: 'idle'|'running'|'error', error? }`
+**SSE stream** (web's EventSource endpoint, NOT socket.io)
+- Client → server: HTTP POST endpoints
+  - `POST /project/:id/ai-assistant/message` — send user message
+  - `POST /project/:id/ai-assistant/stop` — kill subprocess
+  - `POST /project/:id/ai-assistant/permission-response` — approve/deny tool
+  - `POST /project/:id/ai-assistant/revert-file` — revert a file edit
+  - `POST /project/:id/ai-assistant/sessions` — create new session
+  - `POST /project/:id/ai-assistant/sessions/:id/rename` — rename session
+  - `DELETE /project/:id/ai-assistant/sessions/:id` — delete session
+  - `GET /project/:id/ai-assistant/sessions` — list sessions
+- Server → client SSE events
+  - `assistant-message { text }` — streamed model output
+  - `thinking { text }` — extended thinking blocks
+  - `tool-use { id, name, input }` — tool invocation
+  - `tool-result { id, output, isError }` — tool result
+  - `todos { todos }` — TodoWrite checklist
+  - `permission-request { id, tool, input, description }` — ask user to approve
+  - `file-changed { path }` — UI shows "↪ edited path"
+  - `file-diff { path, hunks }` — diff preview with revert option
+  - `status { state }` — 'starting' | 'running' | 'stopped'
+  - `turn-end { usage?, cost? }` — assistant turn finished
+  - `error { message }` — fatal error
 
 ### Frontend
 
-`ai-assistant-pane.tsx` becomes a normal React panel — no iframe.
-- Message list (user / assistant / tool-use blocks)
-- Composer input box
-- Per-message inline diff preview using a `CodeMirror` instance in read-only
-  mode, fed the before/after of edited files
-- Stop button kills the subprocess
+`ai-assistant-pane.tsx` — a normal React panel (no iframe).
+- **PanelHeader**: Logo, connection status dot, ☰ conversation list button, ＋ new conversation, ■ stop, ⎋ sign out
+- **SessionList**: Full-height sidebar overlay showing conversation history, grouped by time (Today/Yesterday/earlier). Click to switch, hover to delete.
+- **Message list**: user / assistant / thinking / tool-use / permission-request / file-diff / todos
+- **Composer**: mode selector (Ask/Plan/Accept edits/Bypass), textarea, @ file picker, / command palette, image attachments, send button
+- **Permission popup**: inline card showing tool name, input, description with Allow/Deny buttons
+- **File diff cards**: collapsible diff with Revert button
+- **Markdown rendering**: `.cc-markdown` with rounded code blocks, blockquotes, tables
 
 ### Security model
 
 The subprocess runs *inside the web container* (not a per-user container).
 That means:
 - It shares the web container's user (uid 1000) — fine for our threat model
-  (single-tenant CE deployment), but **not** for multi-tenant SaaS. Adding
-  per-user bubblewrap/nsjail is a follow-up if needed.
+  (single-tenant CE deployment), but **not** for multi-tenant SaaS.
 - `cwd` is restricted to `/tmp/ai/<projectId>/`. We do NOT pass `--allowed-tools`
   with anything outside that.
-- Network egress: by default, allow (claude needs to call Anthropic API). If
-  we want to block other egress, wrap in a network namespace later.
-- Resource limits: `setrlimit` on RSS and CPU time when spawning. Idle killer
-  bounds wall-clock.
+- Network egress: allow (claude needs to call Anthropic API).
+- Resource limits: idle killer bounds wall-clock time.
 - Auth: **per-user OAuth (Claude subscription), in-browser flow**. No
   API key, no shared host login.
   - Each Overleaf user connects their own Claude account from the AI
     Assistant pane: a "Connect Claude" button starts a PKCE OAuth flow
-    against `https://claude.ai/oauth/authorize` using Claude Code's
-    public client_id, with `redirect_uri=https://console.anthropic.com/oauth/code/callback`
-    (the same "manual code paste" branch the CLI uses over SSH).
-  - User authorizes on anthropic.com, copies the displayed code back into
-    Overleaf, backend exchanges code + PKCE verifier for `access_token`
-    and `refresh_token`.
-  - Tokens are encrypted (libsodium secretbox, key from
-    `AI_ASSISTANT_TOKEN_KEY` env) and stored per-user in Mongo
-    (`users.aiAssistant.claudeOauth = { accessToken, refreshToken,
-    expiresAt, scope }`).
-  - On subprocess spawn: write a temporary per-session
-    `/tmp/ai/<projectId>/.claude/credentials.json` matching the format
-    the CLI expects, run with `HOME=/tmp/ai/<projectId>` so the CLI
-    picks it up. File deleted on process exit.
-  - `ANTHROPIC_API_KEY` is explicitly unset in subprocess env — if it
-    leaks the CLI prefers it over OAuth.
-  - Refresh: a small `ClaudeOauthClient` module refreshes access tokens
-    before spawning if they have <5 min left; writes the new pair back
-    to Mongo.
+    against `https://platform.claude.com/oauth/authorize` using Claude Code's
+    public client_id, with redirect to manual code exchange.
+  - Tokens encrypted (JWE with `AI_ASSISTANT_TOKEN_KEY`) and stored per-user
+    in MongoDB (`users.aiAssistant.claudeOauth`).
+  - On subprocess spawn: write a temporary
+    `/tmp/ai/<projectId>/.claude/credentials.json`, run with
+    `HOME=/tmp/ai/<projectId>` so the CLI picks it up. Deleted on process exit.
 
-### Migration
+### Session management
 
-1. Land new stack behind a feature flag (`AI_ASSISTANT_MODE=lightweight|legacy`,
-   default `lightweight`).
-2. Once verified, delete `AiSessionProxy.mjs`, `AiSessionManager.mjs`,
-   `services/claude-ide-container/`, the `claude-ide` compose service, the
-   webpack `setupMiddlewares` / `onListening` hacks, and the dockerode
-   dependency from `services/web/package.json`.
-3. Drop `/ai/session/*` routes and the iframe.
+Sessions (conversations) are persisted in MongoDB (`aiAssistantSessions` collection):
+- Each session has: `userId, projectId, title, createdAt, updatedAt`
+- Creating a new conversation creates a session record and resets the chat
+- First message text (truncated to 80 chars) becomes the session title
+- Session list UI accessible via ☰ button in the panel header, grouped by time
+- Switching sessions loads the new session and restarts the CLI subprocess
+- Deleting a session removes it from the database
+
+## Implementation status
+
+### Phase 1 — Complete
+- [x] AiAssistantManager: CLI spawn, stream-json parsing, SSE fan-out
+- [x] AiAssistantController: HTTP surface (OAuth, stream, message, stop, files)
+- [x] AiAssistantRouter: route registration
+- [x] ClaudeAuth: OAuth flow via `claude auth login --claudeai`
+- [x] TokenStore + TokenCrypto: JWE encryption for OAuth tokens
+- [x] FileSync: chokidar → DocumentUpdater bidirectional sync
+- [x] React chat panel with message timeline, composer, SSE streaming
+- [x] Mode selector (4-column grid: Ask/Plan/Accept edits/Bypass)
+- [x] Markdown rendering with rounded code blocks, blockquotes, tables
+- [x] Webpack exposed on 0.0.0.0:8082 for LAN access
+
+### Phase 2 — Complete
+- [x] Enhanced @ file picker with file-type icons and directory path
+- [x] Enhanced / command palette with icons and descriptions
+- [x] Image attachments (📎 button, thumbnail preview, base64 upload)
+- [x] Permission request popup (Allow/Deny, tool name + input details)
+- [x] Inline diff cards with Revert button (`/revert-file` endpoint)
+- [x] Multi-session management (SessionList sidebar, CRUD API, MongoDB storage)
+- [x] Session list with time grouping (Today/Yesterday/earlier)
+- [x] Auto-generated session titles from first message
+- [x] ★ New conversation button creates backend session record
+
+### Phase 3 — Not started
+- [ ] SSE reconnection with history replay
+- [ ] i18n (replace hardcoded English strings with `t()` calls)
+- [ ] Pin Claude CLI version in Dockerfile
+- [ ] New file creation support (FileSync create-file endpoint)
+- [ ] Full diff rendering (currently shows placeholder text)
 
 ## Non-goals
 
 - Full IDE experience (use Overleaf's editor; for power users, they can run
   claude locally against a cloned repo)
 - Multi-pane terminals, debugging UI, extensions
-
-## Open questions
-
-- Do we want a thinking-aware UI (show extended-thinking blocks)?
-  Recommendation: yes, collapsed by default.
-- Streaming JSON parsing: parse `claude --output-format stream-json
-  --input-format stream-json` directly via spawned CLI. We can't use the
-  Agent SDK because it authenticates with ANTHROPIC_API_KEY only — we
-  need the CLI's OAuth flow.
-- Persisting conversation history across page reloads: store last N messages
-  per `(userId, projectId)` in Redis with 24 h TTL.

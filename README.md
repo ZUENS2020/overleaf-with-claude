@@ -19,6 +19,60 @@
   Figure 1: A screenshot of a project being edited in Overleaf Community Edition.
 </p>
 
+## Claude Code AI Assistant
+
+This fork includes a lightweight AI assistant powered by [Claude Code](https://docs.anthropic.com/en/docs/claude-code). It adds a chat panel inside Overleaf's editor that connects to the `claude` CLI as an in-process subprocess — no Docker containers per user.
+
+### Features
+
+- **Chat panel** — real-time streaming conversation with Claude inside Overleaf
+- **File editing** — Claude reads and edits project files, changes sync back via Overleaf's real-time pipeline
+- **@ file picker** — mention files with `@`, fuzzy-filtered with file-type icons
+- **/ command palette** — `/clear`, `/compact`, `/help`, `/model`, `/cost`
+- **Image attachments** — attach screenshots or images to messages
+- **Permission modes** — Ask (default), Plan, Accept edits, Bypass
+- **Permission popup** — approve or deny individual tool actions
+- **Inline diffs** — see file edits with Revert option
+- **Session management** — switch between conversations, auto-titled, stored in MongoDB
+- **OAuth login** — each user connects their own Claude account via in-browser PKCE flow
+
+### Architecture
+
+```
+┌────────────────────┐         ┌───────────────────────────────┐
+│  Overleaf frontend │         │           web service         │
+│                    │         │                               │
+│  ChatPane (React)  │◀──SSE──┤  AiAssistantController        │
+│  SessionList       │         │  AiAssistantManager            │
+│  Permission popup  │         │  SessionStore (MongoDB)        │
+│  Inline diffs      │         │    ↓ spawn / stream           │
+│  @ / menus         │         │  claude (CLI subprocess)      │
+└────────────────────┘         │    ↓ writes files             │
+                               │  FileSync → DocumentUpdater    │
+                               └───────────────────────────────┘
+```
+
+### Setup
+
+1. Set `AI_ASSISTANT_TOKEN_KEY` in `dev.env` (generate with `openssl rand -hex 32`)
+2. Set `AI_ASSISTANT_CLAUDE_BIN=claude` in `dev.env`
+3. Install the `claude` CLI on the host or inside the web container
+4. Restart: `docker compose -p overleaf-claude restart web webpack`
+5. Open a project and click the Claude Code icon in the right panel
+
+### Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `AI_ASSISTANT_TOKEN_KEY` | — | 32-byte hex key for JWE token encryption (required) |
+| `AI_ASSISTANT_CLAUDE_BIN` | `claude` | Path to the claude CLI binary (empty = disabled) |
+| `AI_ASSISTANT_IDLE_MS` | `600000` | Idle timeout (ms) before subprocess is killed |
+
+### Docs
+
+- [Lightweight redesign doc](docs/ai-assistant-lightweight-design.md) — full architecture and security model
+- [Phase 2 spec](docs/superpowers/specs/2026-05-27-phase2-ai-assistant-design.md) — feature design details
+
 ## Community Edition
 
 [Overleaf](https://www.overleaf.com) is an open-source online real-time collaborative LaTeX editor. We run a hosted version at [www.overleaf.com](https://www.overleaf.com), but you can also run your own local version, and contribute to the development of Overleaf.

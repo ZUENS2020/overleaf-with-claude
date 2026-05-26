@@ -15,6 +15,7 @@ $cc-error: #cf5454;
   background: var(--bg-light-primary, #fff);
   font-size: 13px;
   color: var(--content-primary, #1c1c1c);
+  position: relative;
 }
 
 // Header --------------------------------------------------------------
@@ -402,13 +403,12 @@ $cc-error: #cf5454;
 }
 .cc-mode-card {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 1px;
+  justify-content: center;
   background: var(--bg-light-primary, #fff);
   border: 1.5px solid var(--border-divider, #d8d8d8);
   border-radius: 8px;
-  padding: 5px 4px 4px;
+  padding: 5px 8px;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
   &:hover {
@@ -422,18 +422,11 @@ $cc-error: #cf5454;
   color: var(--content-primary, #1c1c1c);
   line-height: 1.2;
 }
-.cc-mode-card-hint {
-  font-size: 10px;
-  color: var(--content-secondary, #888);
-  line-height: 1.2;
-  text-align: center;
-}
 .cc-mode-card-active {
   background: $cc-accent-dim;
   border-color: $cc-accent;
   box-shadow: 0 0 0 1px $cc-accent-dim;
   .cc-mode-card-label { color: $cc-accent; }
-  .cc-mode-card-hint { color: darken($cc-accent, 10%); }
 }
 .cc-composer-inner {
   display: flex;
@@ -697,4 +690,88 @@ $cc-error: #cf5454;
 // Composer inner needs position:relative for picker -------------------
 .cc-composer-inner {
   position: relative;
+}
+
+// Session list sidebar -----------------------------------------------
+.cc-session-list {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  background: var(--bg-light-primary, #fff);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border-divider, #e5e5e5);
+  overflow-y: auto;
+}
+.cc-session-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-divider, #e5e5e5);
+}
+.cc-session-group {
+  padding: 0;
+}
+.cc-session-group-label {
+  padding: 8px 12px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--content-secondary, #888);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.cc-session-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  cursor: pointer;
+  gap: 8px;
+  &:hover {
+    background: var(--bg-light-tertiary, #f5f5f5);
+  }
+}
+.cc-session-item-active {
+  background: $cc-accent-dim;
+  .cc-session-item-title {
+    color: $cc-accent;
+    font-weight: 600;
+  }
+}
+.cc-session-item-title {
+  flex: 1;
+  font-size: 13px;
+  color: var(--content-primary, #1c1c1c);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cc-session-item-delete {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  color: var(--content-secondary, #888);
+  opacity: 0;
+  transition: opacity 0.15s;
+  &:hover {
+    background: var(--bg-light-tertiary, #eee);
+    color: $cc-error;
+  }
+  .cc-session-item:hover & {
+    opacity: 1;
+  }
+}
+.cc-session-empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--content-secondary, #888);
+  font-size: 13px;
 }
