@@ -14,6 +14,8 @@
   <a href="#license">License</a>
 </p>
 
+> **Note:** This is a modified version of [Overleaf Community Edition](https://github.com/overleaf/overleaf) with an integrated Claude Code AI assistant. Modifications are released under the same AGPL-3.0 license — see [Changes from upstream](#changes-from-upstream) below.
+
 <img src="doc/screenshot.png" alt="A screenshot of a project being edited in Overleaf Community Edition">
 <p align="center">
   Figure 1: A screenshot of a project being edited in Overleaf Community Edition.

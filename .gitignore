@@ -3,4 +3,11 @@
 
 # user defined files
 .env
+dev.env
 docker-compose.override.yml
+
+# claude worktrees and cache
+.claude/
+
+# superpowers docs (internal planning)
+docs/superpowers/
