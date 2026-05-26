@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  FormEvent,
-} from 'react'
+import { useCallback, useEffect, useRef, useState, FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import RailPanelHeader from '@/features/ide-react/components/rail/rail-panel-header'
 import { useProjectContext } from '@/shared/context/project-context'
@@ -185,7 +179,6 @@ function Chat({
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const assistantDraftIdRef = useRef<string | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
 
   // Open the SSE stream once per project.
@@ -202,44 +195,9 @@ function Chat({
     es.addEventListener('user-message', (ev: MessageEvent) => {
       // server echoes; ignore — we already added it locally on send.
     })
-    es.addEventListener('assistant-text', (ev: MessageEvent) => {
+    es.addEventListener('assistant-message', (ev: MessageEvent) => {
       const d = JSON.parse(ev.data)
-      const id = assistantDraftIdRef.current || newId()
-      assistantDraftIdRef.current = id
-      setMessages(curr => {
-        const idx = curr.findIndex(
-          m => m.kind === 'assistant' && m.id === id
-        )
-        if (idx === -1) {
-          return [...curr, { kind: 'assistant', text: d.text, id }]
-        }
-        const next = [...curr]
-        next[idx] = {
-          ...(next[idx] as any),
-          text: (next[idx] as any).text + d.text,
-        }
-        return next
-      })
-    })
-    es.addEventListener('assistant-delta', (ev: MessageEvent) => {
-      // Already covered by assistant-text for non-streaming flows. If
-      // streaming deltas come in, treat them the same.
-      const d = JSON.parse(ev.data)
-      const id = assistantDraftIdRef.current || newId()
-      assistantDraftIdRef.current = id
-      setMessages(curr => {
-        const idx = curr.findIndex(
-          m => m.kind === 'assistant' && m.id === id
-        )
-        if (idx === -1)
-          return [...curr, { kind: 'assistant', text: d.text, id }]
-        const next = [...curr]
-        next[idx] = {
-          ...(next[idx] as any),
-          text: (next[idx] as any).text + d.text,
-        }
-        return next
-      })
+      append({ kind: 'assistant', text: d.text, id: newId() })
     })
     es.addEventListener('tool-use', (ev: MessageEvent) => {
       const d = JSON.parse(ev.data)
@@ -266,9 +224,7 @@ function Chat({
       const d = JSON.parse(ev.data)
       append({ kind: 'file-changed', path: d.path, id: newId() })
     })
-    es.addEventListener('turn-end', () => {
-      assistantDraftIdRef.current = null
-    })
+    es.addEventListener('turn-end', () => {})
     es.addEventListener('error', (ev: MessageEvent) => {
       const data = (ev as any).data
       if (data) {
@@ -298,7 +254,6 @@ function Chat({
       setInput('')
       setError(null)
       setMessages(curr => [...curr, { kind: 'user', text, id: newId() }])
-      assistantDraftIdRef.current = null
       try {
         await postJSON(`/project/${projectId}/ai-assistant/message`, {
           body: { text },

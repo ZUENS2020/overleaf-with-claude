@@ -104,7 +104,6 @@ class Session {
         '--input-format', 'stream-json',
         '--output-format', 'stream-json',
         '--verbose',
-        '--include-partial-messages',
       ]
       const env = {
         ...process.env,
@@ -182,7 +181,8 @@ class Session {
     if (obj.type === 'assistant' && obj.message?.content) {
       for (const block of obj.message.content) {
         if (block.type === 'text') {
-          this.emit('assistant-text', { text: block.text })
+          // Each text block is one complete assistant message bubble.
+          this.emit('assistant-message', { text: block.text })
         } else if (block.type === 'tool_use') {
           this.emit('tool-use', {
             id: block.id,
@@ -206,12 +206,6 @@ class Session {
         usage: obj.usage || null,
         cost: obj.total_cost_usd || null,
       })
-    } else if (obj.type === 'stream_event') {
-      // Streaming text deltas (when --include-partial-messages is set).
-      const ev = obj.event
-      if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
-        this.emit('assistant-delta', { text: ev.delta.text })
-      }
     }
   }
 

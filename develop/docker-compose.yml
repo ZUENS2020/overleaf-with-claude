@@ -187,3 +187,4 @@ services:
       - ./webpack.config.dev-env.js:/overleaf/services/web/webpack.config.dev-env.js
       - ../services/web/frontend:/overleaf/services/web/frontend
       - ../services/web/app/src:/overleaf/services/web/app/src
+      - ../services/web/locales:/overleaf/services/web/locales
