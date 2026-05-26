@@ -4,7 +4,7 @@
 import logger from '@overleaf/logger'
 import Settings from '@overleaf/settings'
 import SessionManager from '../Authentication/SessionManager.mjs'
-import * as ClaudeOauth from './ClaudeOauthClient.mjs'
+import * as ClaudeAuth from './ClaudeAuth.mjs'
 import * as TokenStore from './TokenStore.mjs'
 import AiAssistantManager from './AiAssistantManager.mjs'
 
@@ -26,40 +26,29 @@ export default {
     if (!enabled()) return res.status(503).json({ error: 'disabled' })
     const userId = requireUser(req, res)
     if (!userId) return
-    const pair = ClaudeOauth.newPkcePair()
-    // stash verifier in session for the exchange step
-    req.session.claudeOauthPkce = {
-      verifier: pair.verifier,
-      state: pair.state,
-      createdAt: Date.now(),
+    try {
+      const url = await ClaudeAuth.startLogin(userId)
+      res.json({ authorizeUrl: url })
+    } catch (err) {
+      logger.warn({ err, userId }, 'claude auth login start failed')
+      res.status(500).json({ error: 'start_failed', detail: err.message })
     }
-    res.json({
-      authorizeUrl: ClaudeOauth.authorizeUrl(pair),
-      state: pair.state,
-    })
   },
 
   async oauthExchange(req, res) {
     if (!enabled()) return res.status(503).json({ error: 'disabled' })
     const userId = requireUser(req, res)
     if (!userId) return
-    const pkce = req.session.claudeOauthPkce
-    if (!pkce) return res.status(400).json({ error: 'no_pending_oauth' })
     const { code } = req.body || {}
     if (!code || typeof code !== 'string') {
       return res.status(400).json({ error: 'missing_code' })
     }
     try {
-      const tokens = await ClaudeOauth.exchangeCode({
-        code,
-        verifier: pkce.verifier,
-        state: pkce.state,
-      })
+      const tokens = await ClaudeAuth.submitCode(userId, code)
       await TokenStore.store(userId, tokens)
-      delete req.session.claudeOauthPkce
       res.json({ ok: true, account: tokens.account || null })
     } catch (err) {
-      logger.warn({ err, userId }, 'claude oauth exchange failed')
+      logger.warn({ err, userId }, 'claude auth login submit failed')
       res.status(400).json({ error: 'exchange_failed', detail: err.message })
     }
   },

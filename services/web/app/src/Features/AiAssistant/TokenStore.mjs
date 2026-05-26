@@ -1,12 +1,12 @@
 // Per-user Claude OAuth token storage. Tokens are encrypted with the
-// AI_ASSISTANT_TOKEN_KEY before hitting Mongo.
+// AI_ASSISTANT_TOKEN_KEY before hitting Mongo. The claude CLI itself
+// handles access-token refresh when spawned with a credentials file
+// containing a valid refresh token, so we don't run a refresh loop here
+// — we just store what the CLI wrote and let it manage rotation.
 
 import { User } from '../../models/User.mjs'
 import { seal, open } from './TokenCrypto.mjs'
-import * as ClaudeOauth from './ClaudeOauthClient.mjs'
 import logger from '@overleaf/logger'
-
-const REFRESH_BUFFER_MS = 5 * 60 * 1000
 
 export async function load(userId) {
   const user = await User.findById(userId, { aiAssistant: 1 }).exec()
@@ -40,21 +40,8 @@ export async function clear(userId) {
   ).exec()
 }
 
-// Returns a fresh access token. Refreshes if the stored one is near
-// expiry. Returns null when the user hasn't connected.
+// Kept for API compatibility with the manager — returns the stored
+// token blob as-is.
 export async function ensureFresh(userId) {
-  const tok = await load(userId)
-  if (!tok) return null
-  if (tok.expiresAt - Date.now() > REFRESH_BUFFER_MS) return tok
-  try {
-    const next = await ClaudeOauth.refresh({ refreshToken: tok.refreshToken })
-    // refresh response usually omits account; preserve the original label.
-    if (!next.account) next.account = tok.account
-    await store(userId, next)
-    return next
-  } catch (err) {
-    logger.warn({ err, userId }, 'claude oauth refresh failed; clearing token')
-    await clear(userId)
-    return null
-  }
+  return await load(userId)
 }

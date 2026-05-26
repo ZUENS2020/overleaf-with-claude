@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os'
 import logger from '@overleaf/logger'
 import Settings from '@overleaf/settings'
 import * as TokenStore from './TokenStore.mjs'
-import * as ClaudeOauth from './ClaudeOauthClient.mjs'
+import * as ClaudeAuth from './ClaudeAuth.mjs'
 import ProjectEntityHandler from '../Project/ProjectEntityHandler.mjs'
 import FileSync from './FileSync.mjs'
 
@@ -78,7 +78,7 @@ class Session {
     if (!tok) throw new Error('not_connected')
     await writeFile(
       join(credDir, '.credentials.json'),
-      JSON.stringify(ClaudeOauth.toCredentialsFile(tok))
+      JSON.stringify(ClaudeAuth.toCredentialsFile(tok))
     )
 
     // Copy project docs in. Binary file assets (filestore) are out of
