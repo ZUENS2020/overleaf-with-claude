@@ -1,11 +1,5 @@
 import { db, ObjectId } from '../../infrastructure/mongodb.mjs'
 
-const SESSIONS = 'aiAssistantSessions'
-
-function coll() {
-  return db.collection(SESSIONS)
-}
-
 export default {
   async create(userId, projectId, title) {
     const doc = {
@@ -15,12 +9,12 @@ export default {
       createdAt: new Date(),
       updatedAt: new Date(),
     }
-    const { insertedId } = await coll().insertOne(doc)
+    const { insertedId } = await db.aiAssistantSessions.insertOne(doc)
     return { id: insertedId.toString(), ...doc, _id: insertedId }
   },
 
   async list(userId, projectId) {
-    const docs = await coll()
+    const docs = await db.aiAssistantSessions
       .find({
         userId: new ObjectId(userId),
         projectId: new ObjectId(projectId),
@@ -43,17 +37,17 @@ export default {
     }
     const $set = { updatedAt: new Date() }
     if (updates.title != null) $set.title = updates.title
-    await coll().updateOne(filter, { $set })
+    await db.aiAssistantSessions.updateOne(filter, { $set })
   },
 
   async remove(sessionId, userId) {
-    await coll().deleteOne({
+    await db.aiAssistantSessions.deleteOne({
       _id: new ObjectId(sessionId),
       userId: new ObjectId(userId),
     })
   },
 
   async findById(sessionId) {
-    return coll().findOne({ _id: new ObjectId(sessionId) })
+    return db.aiAssistantSessions.findOne({ _id: new ObjectId(sessionId) })
   },
 }
