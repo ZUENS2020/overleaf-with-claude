@@ -91,9 +91,10 @@ class Session {
     }
   }
 
-  async start() {
+  async start(opts = {}) {
     if (this.proc) return
     if (this.starting) return this.starting
+    this.permissionMode = opts.permissionMode || 'default'
     this.starting = (async () => {
       this.emit('status', { state: 'starting' })
       await this.hydrateCwd()
@@ -104,6 +105,7 @@ class Session {
         '--input-format', 'stream-json',
         '--output-format', 'stream-json',
         '--verbose',
+        '--permission-mode', this.permissionMode,
       ]
       const env = {
         ...process.env,
@@ -181,14 +183,20 @@ class Session {
     if (obj.type === 'assistant' && obj.message?.content) {
       for (const block of obj.message.content) {
         if (block.type === 'text') {
-          // Each text block is one complete assistant message bubble.
           this.emit('assistant-message', { text: block.text })
+        } else if (block.type === 'thinking') {
+          this.emit('thinking', { text: block.thinking || block.text || '' })
         } else if (block.type === 'tool_use') {
           this.emit('tool-use', {
             id: block.id,
             name: block.name,
             input: block.input,
           })
+          // TodoWrite carries its list as input.todos. Surface it directly
+          // so the UI can render a checklist without re-parsing.
+          if (block.name === 'TodoWrite' && Array.isArray(block.input?.todos)) {
+            this.emit('todos', { todos: block.input.todos })
+          }
         }
       }
     } else if (obj.type === 'user' && obj.message?.content) {
@@ -209,8 +217,8 @@ class Session {
     }
   }
 
-  async send(text) {
-    if (!this.proc) await this.start()
+  async send(text, opts = {}) {
+    if (!this.proc) await this.start(opts)
     this.lastActivity = Date.now()
     this.resetIdleTimer()
     const msg = {
@@ -280,9 +288,9 @@ export default {
     s.subscribers.add(fn)
     return () => s.subscribers.delete(fn)
   },
-  async send(userId, projectId, text) {
+  async send(userId, projectId, text, opts) {
     const s = get(userId, projectId)
-    await s.send(text)
+    await s.send(text, opts)
   },
   async stop(userId, projectId) {
     const k = key(userId, projectId)

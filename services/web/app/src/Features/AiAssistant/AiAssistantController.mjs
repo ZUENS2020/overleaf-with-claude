@@ -80,11 +80,12 @@ export default {
     if (!userId) return
     const projectId = req.params.Project_id
     const text = req.body?.text
+    const permissionMode = req.body?.permissionMode
     if (!text || typeof text !== 'string') {
       return res.status(400).json({ error: 'missing_text' })
     }
     try {
-      await AiAssistantManager.send(userId, projectId, text)
+      await AiAssistantManager.send(userId, projectId, text, { permissionMode })
       res.json({ ok: true })
     } catch (err) {
       logger.warn({ err, userId, projectId }, 'ai-assistant send failed')
