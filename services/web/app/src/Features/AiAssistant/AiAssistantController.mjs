@@ -304,6 +304,7 @@ export default {
     res.setHeader('content-type', 'text/event-stream')
     res.setHeader('cache-control', 'no-cache')
     res.setHeader('connection', 'keep-alive')
+    res.setHeader('x-accel-buffering', 'no')
     res.flushHeaders?.()
 
     const send = (event, data) => {

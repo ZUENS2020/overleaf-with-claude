@@ -96,13 +96,16 @@ COPY libraries/validation-tools/ /overleaf/libraries/validation-tools/
 COPY services/web/ /overleaf/services/web/
 COPY tools/migrations/ /overleaf/tools/migrations/
 
+# Ensure node user can write to services/web (for lezer & make)
+USER root
+RUN chown -R node:node /overleaf/services/web /overleaf/tools
+USER node
+
 # Build the latex parser
 RUN cd /overleaf/services/web && yarn run 'lezer-latex:generate'
 
-# The module folders are owned as root. The node user cannot create them. Create them in advance.
+# The module folders are owned as root. The node user cannot create them in advance. Create them in advance.
 RUN cd /overleaf/services/web && make create_module_Makefiles
-
-USER node
 
 
 # the webpack image has deps+src+webpack artifacts

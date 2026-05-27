@@ -1,4 +1,5 @@
 const Path = require('node:path')
+const crypto = require('node:crypto')
 const { merge } = require('@overleaf/settings/merge')
 
 let defaultFeatures, siteUrl
@@ -117,16 +118,18 @@ const httpPermissionsPolicy = {
 
 const safeCompilers = ['xelatex', 'pdflatex', 'latex', 'lualatex']
 
-// AI assistant: lightweight in-process Claude Code. Enabled when both a
-// claude CLI binary path and an encryption key for OAuth tokens are set.
-const aiAssistant =
-  process.env.AI_ASSISTANT_CLAUDE_BIN && process.env.AI_ASSISTANT_TOKEN_KEY
-    ? {
-        claudeBin: process.env.AI_ASSISTANT_CLAUDE_BIN,
-        tokenKey: process.env.AI_ASSISTANT_TOKEN_KEY,
-        idleMs: intFromEnv('AI_ASSISTANT_IDLE_MS', 600_000),
-      }
-    : null
+// AI assistant: lightweight in-process Claude Code. Enabled when a
+// claude CLI binary path is set. tokenKey auto-generated if not provided.
+const _aiBin = process.env.AI_ASSISTANT_CLAUDE_BIN
+const aiAssistant = _aiBin
+  ? {
+      claudeBin: _aiBin,
+      tokenKey:
+        process.env.AI_ASSISTANT_TOKEN_KEY ||
+        crypto.randomBytes(32).toString('hex'),
+      idleMs: intFromEnv('AI_ASSISTANT_IDLE_MS', 600_000),
+    }
+  : null
 
 module.exports = {
   env: 'server-ce',

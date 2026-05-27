@@ -27,11 +27,11 @@ const {
 const IEEE_BRAND_ID = Settings.ieeeBrandId
 
 let webpackManifest
+let manifestLoadedFromFile = false
 async function loadManifest() {
   switch (process.env.NODE_ENV) {
     case 'production':
       /* eslint-disable import/no-unresolved */
-      // Only load webpack manifest file in production.
       webpackManifest = (
         await import('../../../public/manifest.json', {
           with: { type: 'json' },
@@ -40,18 +40,35 @@ async function loadManifest() {
       /* eslint-enable import/no-unresolved */
       break
     case 'development': {
-      // In dev, fetch the manifest from the webpack container.
-      loadManifestFromWebpackDevServer()
-      const intervalHandle = setInterval(
-        loadManifestFromWebpackDevServer,
-        10 * 1000
-      )
-      addOptionalCleanupHandlerAfterDrainingConnections(
-        'refresh webpack manifest',
-        () => {
-          clearInterval(intervalHandle)
+      // Try webpack dev server first; if unreachable, fall back to
+      // the pre-built manifest on disk (allows running without webpack).
+      const loaded = await loadManifestFromWebpackDevServer()
+      if (!loaded) {
+        try {
+          const fs = await import('node:fs/promises')
+          const raw = await fs.readFile(
+            new URL('../../../public/manifest.json', import.meta.url),
+            'utf8'
+          )
+          webpackManifest = JSON.parse(raw)
+          manifestLoadedFromFile = true
+          logger.info('loaded webpack manifest from local file (webpack dev server unavailable)')
+        } catch (e) {
+          logger.err({ error: e }, 'cannot load webpack manifest from file or dev server')
         }
-      )
+      }
+      if (!manifestLoadedFromFile) {
+        const intervalHandle = setInterval(
+          loadManifestFromWebpackDevServer,
+          10 * 1000
+        )
+        addOptionalCleanupHandlerAfterDrainingConnections(
+          'refresh webpack manifest',
+          () => {
+            clearInterval(intervalHandle)
+          }
+        )
+      }
       break
     }
     default:
@@ -60,7 +77,7 @@ async function loadManifest() {
   }
 }
 function loadManifestFromWebpackDevServer(done = function () {}) {
-  fetchJson(new URL(`/manifest.json`, Settings.apis.webpack.url), {
+  return fetchJson(new URL(`/manifest.json`, Settings.apis.webpack.url), {
     headers: {
       Host: 'localhost',
     },
@@ -68,10 +85,12 @@ function loadManifestFromWebpackDevServer(done = function () {}) {
     .then(json => {
       webpackManifest = json
       done()
+      return true
     })
     .catch(error => {
-      logger.err({ error }, 'cannot fetch webpack manifest')
-      done(error)
+      logger.warn({ error }, 'webpack dev server unreachable, will try local manifest')
+      done()
+      return false
     })
 }
 const IN_CI = process.env.NODE_ENV === 'test'

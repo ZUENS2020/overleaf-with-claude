@@ -16,7 +16,11 @@ let SECRET
 function getSecret() {
   if (!SECRET) {
     const hex = Settings.aiAssistant?.tokenKey
-    if (!hex) throw new Error('aiAssistant.tokenKey not configured')
+    if (!hex) {
+      throw new Error(
+        'aiAssistant.tokenKey not configured — set AI_ASSISTANT_TOKEN_KEY in dev.env'
+      )
+    }
     SECRET = crypto.createSecretKey(Buffer.from(hex, 'hex'))
   }
   return SECRET
