@@ -56,6 +56,18 @@ $cc-error: #cf5454;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.cc-header-provider {
+  font-size: 10px;
+  color: var(--content-secondary, #888);
+  margin-left: 4px;
+  padding: 1px 5px;
+  background: var(--bg-secondary, #f0f0f0);
+  border-radius: 3px;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cc-header-model {
   font-size: 11px;
   color: var(--brand-primary, #0b89a1);
@@ -768,4 +780,184 @@ $cc-error: #cf5454;
   text-align: center;
   color: var(--content-secondary, #888);
   font-size: 13px;
+}
+
+// ── Settings panel ──
+.cc-settings {
+  padding: 12px;
+  height: 100%;
+  overflow-y: auto;
+
+  .cc-settings-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--content-primary, #333);
+    margin-bottom: 12px;
+  }
+
+  .cc-provider-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .cc-provider-card {
+    background: var(--bg-secondary, #f5f5f5);
+    border: 1px solid var(--border-color, #ddd);
+    border-radius: 8px;
+    padding: 12px;
+    position: relative;
+
+    &-active {
+      border-color: $cc-success;
+      background: rgba($cc-success, 0.06);
+    }
+
+    .cc-provider-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 4px;
+
+      .cc-provider-name {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--content-primary, #333);
+      }
+
+      .cc-provider-badge {
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: $cc-success;
+        color: #fff;
+      }
+    }
+
+    .cc-provider-meta {
+      font-size: 11px;
+      color: var(--content-secondary, #888);
+      margin-bottom: 8px;
+      word-break: break-all;
+    }
+
+    .cc-provider-actions {
+      display: flex;
+      gap: 6px;
+
+      .cc-btn {
+        font-size: 11px;
+        padding: 4px 10px;
+        border-radius: 4px;
+        border: 1px solid var(--border-color, #ddd);
+        background: var(--bg-primary, #fff);
+        color: var(--content-primary, #333);
+        cursor: pointer;
+
+        &:hover {
+          background: var(--bg-hover, #eee);
+        }
+
+        &-danger {
+          color: $cc-error;
+          border-color: rgba($cc-error, 0.2);
+          &:hover {
+            background: rgba($cc-error, 0.06);
+          }
+        }
+
+        &-primary {
+          background: $cc-success;
+          color: #fff;
+          border-color: $cc-success;
+          &:hover {
+            opacity: 0.9;
+          }
+        }
+      }
+    }
+  }
+
+  .cc-add-provider {
+    margin-top: 12px;
+    width: 100%;
+    padding: 8px;
+    border: 1px dashed var(--border-color, #ddd);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--content-secondary, #888);
+    font-size: 12px;
+    cursor: pointer;
+    text-align: center;
+
+    &:hover {
+      background: var(--bg-hover, #f0f0f0);
+      color: var(--content-primary, #333);
+    }
+  }
+
+  .cc-provider-form {
+    margin-top: 12px;
+    padding: 12px;
+    background: var(--bg-secondary, #f5f5f5);
+    border: 1px solid var(--border-color, #ddd);
+    border-radius: 8px;
+
+    .cc-field {
+      margin-bottom: 8px;
+
+      label {
+        display: block;
+        font-size: 11px;
+        color: var(--content-secondary, #888);
+        margin-bottom: 4px;
+      }
+
+      input,
+      select {
+        width: 100%;
+        padding: 6px 8px;
+        font-size: 12px;
+        border: 1px solid var(--border-color, #ddd);
+        border-radius: 4px;
+        background: var(--bg-primary, #fff);
+        color: var(--content-primary, #333);
+        box-sizing: border-box;
+
+        &:focus {
+          outline: none;
+          border-color: $cc-accent;
+        }
+      }
+    }
+
+    .cc-form-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 10px;
+
+      .cc-btn {
+        font-size: 11px;
+        padding: 5px 14px;
+        border-radius: 4px;
+        border: 1px solid var(--border-color, #ddd);
+        background: var(--bg-primary, #fff);
+        color: var(--content-primary, #333);
+        cursor: pointer;
+
+        &:hover {
+          background: var(--bg-hover, #eee);
+        }
+
+        &-primary {
+          background: $cc-success;
+          color: #fff;
+          border-color: $cc-success;
+          &:hover {
+            opacity: 0.9;
+          }
+        }
+      }
+    }
+  }
 }
