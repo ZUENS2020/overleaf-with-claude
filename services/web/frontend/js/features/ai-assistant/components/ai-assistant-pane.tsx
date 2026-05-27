@@ -21,13 +21,10 @@ import claudeLogoUrl from '../assets/claude-logo.svg'
 
 type PermissionMode = 'plan' | 'bypassPermissions'
 
-type ConnectionInfo = {
-  active: {
-    type: string
-    name: string
-    model: string
-    account: string | null
-  } | null
+type OauthStatus = {
+  enabled: boolean
+  connected: boolean
+  account: string | null
 }
 
 const MODEL_OPTIONS: { value: string; label: string }[] = [
@@ -133,23 +130,33 @@ function renderMarkdown(src: string): string {
 export const AiAssistantPane = () => {
   const { projectId } = useProjectContext()
   const { write } = usePermissionsContext()
-  const [connection, setConnection] = useState<ConnectionInfo | null>(null)
+  const [status, setStatus] = useState<OauthStatus | null>(null)
   const [refreshTick, setRefreshTick] = useState(0)
   const [preferredModel, setPreferredModel] = useState<string>('sonnet')
 
   useEffect(() => {
-    getJSON<ConnectionInfo>('/ai-assistant/connection')
-      .then(setConnection)
-      .catch(() => setConnection(null))
+    getJSON<OauthStatus>('/ai-assistant/oauth/status')
+      .then(setStatus)
+      .catch(() => setStatus({ enabled: false, connected: false, account: null }))
     getJSON<{ preferredModel: string }>('/ai-assistant/preferences')
       .then(r => setPreferredModel(r.preferredModel || 'sonnet'))
       .catch(() => {})
   }, [refreshTick])
 
-  if (!connection) {
+  if (!status) {
     return (
       <div className="cc-panel">
         <PanelHeader connectionState="loading" />
+      </div>
+    )
+  }
+  if (!status.enabled) {
+    return (
+      <div className="cc-panel">
+        <PanelHeader connectionState="disabled" />
+        <div className="cc-empty">
+          <p>Claude Code is not enabled on this server.</p>
+        </div>
       </div>
     )
   }
@@ -167,26 +174,13 @@ export const AiAssistantPane = () => {
       </div>
     )
   }
-  if (!connection.active) {
-    return (
-      <div className="cc-panel">
-        <PanelHeader connectionState="disabled" model={preferredModel} />
-        <div className="cc-empty">
-          <img src={claudeLogoUrl} className="cc-logo-large" alt="" />
-          <h3>No active provider</h3>
-          <p className="cc-empty-sub">
-            Configure a provider in{' '}
-            <span style={{ fontWeight: 600 }}>AI Settings</span>.
-          </p>
-        </div>
-      </div>
-    )
+  if (!status.connected) {
+    return <ConnectClaude onConnected={() => setRefreshTick(n => n + 1)} />
   }
   return (
     <Chat
       projectId={projectId}
-      account={connection.active.account}
-      providerName={connection.active.name}
+      account={status.account}
       preferredModel={preferredModel}
       onModelChange={async (model: string) => {
         try {
@@ -213,7 +207,6 @@ function PanelHeader({
   connectionState,
   account,
   model,
-  providerName,
   onStop,
   onNew,
   onDisconnect,
@@ -222,7 +215,6 @@ function PanelHeader({
   connectionState: 'loading' | 'disabled' | 'idle' | 'running' | 'error'
   account?: string | null
   model?: string
-  providerName?: string
   onStop?: () => void
   onNew?: () => void
   onDisconnect?: () => void
@@ -244,9 +236,7 @@ function PanelHeader({
         )}
       </div>
       <div className="cc-header-actions">
-        {providerName && (
-          <span className="cc-header-provider">{providerName}</span>
-        )}
+        {account && <span className="cc-header-account">{account}</span>}
         {model && <span className="cc-header-model">{model}</span>}
         {onToggleSessions && (
           <button
@@ -292,6 +282,102 @@ function PanelHeader({
             ⎋
           </button>
         )}
+      </div>
+    </div>
+  )
+}
+
+function ConnectClaude({ onConnected }: { onConnected: () => void }) {
+  const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null)
+  const [code, setCode] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const start = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const r = await postJSON<{ authorizeUrl: string }>(
+        '/ai-assistant/oauth/start'
+      )
+      setAuthorizeUrl(r.authorizeUrl)
+      window.open(r.authorizeUrl, '_blank', 'noopener')
+    } catch (e: any) {
+      setError(e?.message || String(e))
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  const submit = useCallback(
+    async (ev: FormEvent) => {
+      ev.preventDefault()
+      setBusy(true)
+      setError(null)
+      try {
+        await postJSON('/ai-assistant/oauth/exchange', { body: { code } })
+        onConnected()
+      } catch (e: any) {
+        setError(e?.message || String(e))
+      } finally {
+        setBusy(false)
+      }
+    },
+    [code, onConnected]
+  )
+
+  return (
+    <div className="cc-panel">
+      <PanelHeader connectionState="idle" />
+      <div className="cc-empty">
+        <img src={claudeLogoUrl} className="cc-logo-large" alt="" />
+        <h3>Connect your Claude account</h3>
+        <p className="cc-empty-sub">
+          You'll authorize on anthropic.com and paste the code back here.
+        </p>
+        {!authorizeUrl ? (
+          <button
+            type="button"
+            className="cc-btn cc-btn-primary"
+            onClick={start}
+            disabled={busy}
+          >
+            Connect Claude
+          </button>
+        ) : (
+          <form onSubmit={submit} className="cc-oauth-form">
+            <p className="cc-empty-sub">
+              After authorizing, paste the code Anthropic displays here.
+            </p>
+            <input
+              type="text"
+              className="cc-input"
+              placeholder="Paste authorization code"
+              value={code}
+              onChange={e => setCode(e.target.value)}
+              autoFocus
+            />
+            <div className="cc-row-gap">
+              <button
+                type="submit"
+                className="cc-btn cc-btn-primary"
+                disabled={busy || !code.trim()}
+              >
+                {busy ? '…' : 'Submit code'}
+              </button>
+              <button
+                type="button"
+                className="cc-btn cc-btn-ghost"
+                onClick={() =>
+                  authorizeUrl && window.open(authorizeUrl, '_blank', 'noopener')
+                }
+              >
+                Reopen page
+              </button>
+            </div>
+          </form>
+        )}
+        {error && <div className="cc-error">{error}</div>}
       </div>
     </div>
   )
@@ -363,14 +449,12 @@ function SessionList({
 function Chat({
   projectId,
   account,
-  providerName,
   preferredModel,
   onModelChange,
   onDisconnect,
 }: {
   projectId: string
   account: string | null
-  providerName?: string
   preferredModel: string
   onModelChange: (model: string) => void
   onDisconnect: () => void
@@ -695,7 +779,7 @@ function Chat({
       )}
       <PanelHeader
         connectionState={state}
-        providerName={providerName}
+        account={account}
         model={preferredModel}
         onNew={messages.length > 0 || state === 'running' ? newConversation : undefined}
         onStop={state === 'running' ? stop : undefined}
