@@ -1,3 +1,10 @@
 #!/usr/bin/env bash
 
+mkdir -p "${PWD}/output" "${PWD}/compiles"
+
 docker compose up --detach "$@"
+
+# clsi-nginx mounts the output directory read-only; if the directory was
+# empty when the container was first created, the bind-mount won't pick up
+# files written later by clsi. Force-recreate it so it sees current content.
+docker compose up --detach --force-recreate clsi-nginx
