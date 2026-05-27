@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, FormEvent } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   getJSON,
   postJSON,
@@ -15,6 +15,15 @@ interface Provider {
   account: string | null
   baseUrl: string | null
   apiKey: string
+}
+
+interface ConnectionInfo {
+  active: {
+    type: string
+    name: string
+    model: string
+    account: string | null
+  } | null
 }
 
 interface FormData {
@@ -40,16 +49,6 @@ export default function AiAssistantSettings() {
   const [form, setForm] = useState<FormData>({ ...INITIAL_FORM })
   const [loading, setLoading] = useState(false)
   const [tick, setTick] = useState(0)
-
-  // OAuth two-step state
-  const [oauthUrl, setOauthUrl] = useState<string | null>(null)
-  const [oauthCode, setOauthCode] = useState('')
-  const [oauthBusy, setOauthBusy] = useState(false)
-  const [oauthError, setOauthError] = useState<string | null>(null)
-
-  // Test state
-  const [testing, setTesting] = useState(false)
-  const [testResult, setTestResult] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -79,78 +78,41 @@ export default function AiAssistantSettings() {
     } catch {}
   }
 
-  const startOAuth = useCallback(async () => {
-    setOauthBusy(true)
-    setOauthError(null)
+  const startOAuth = async () => {
+    setLoading(true)
     try {
-      const r = await postJSON<{ authorizeUrl: string }>(
+      const { authorizeUrl } = await postJSON<{ authorizeUrl: string }>(
         '/ai-assistant/oauth/start'
       )
-      setOauthUrl(r.authorizeUrl)
-      window.open(r.authorizeUrl, '_blank', 'noopener')
-    } catch (e: any) {
-      setOauthError(e?.message || String(e))
-    } finally {
-      setOauthBusy(false)
-    }
-  }, [])
-
-  const handleOAuthSubmit = useCallback(
-    async (ev: FormEvent) => {
-      ev.preventDefault()
-      setOauthBusy(true)
-      setOauthError(null)
-      try {
-        await postJSON('/ai-assistant/oauth/exchange', {
-          body: { code: oauthCode },
-        })
-        const name = form.name.trim() || 'Anthropic OAuth'
-        const { id } = await postJSON<{ id: string }>(
-          '/ai-assistant/providers',
-          {
-            body: { name, type: 'oauth', model: form.model },
-          }
-        )
-        await activate(id)
-        setShowForm(false)
-        setForm({ ...INITIAL_FORM })
-        setOauthUrl(null)
-        setOauthCode('')
-        setTick(n => n + 1)
-      } catch (e: any) {
-        setOauthError(e?.message || String(e))
-      } finally {
-        setOauthBusy(false)
-      }
-    },
-    [oauthCode, form.name, form.model]
-  )
-
-  const testConnection = async () => {
-    setTesting(true)
-    setTestResult(null)
-    try {
-      const r = await postJSON<{ ok: boolean; message: string }>(
-        '/ai-assistant/providers/test',
-        {
-          body: {
-            type: form.type,
-            apiKey: form.apiKey,
-            baseUrl: form.type === 'custom' ? form.baseUrl : undefined,
-          },
-        }
+      const win = window.open(authorizeUrl, '_blank')
+      const code = window.prompt(
+        'Paste the authorization code from your browser:'
       )
-      setTestResult(r.ok ? 'Connection OK' : r.message || 'Test failed')
-    } catch (e: any) {
-      setTestResult(e?.message || 'Test failed')
+      if (win && !win.closed) win.close()
+      if (!code) return
+      await postJSON('/ai-assistant/oauth/exchange', { body: { code } })
+      const body: Record<string, string> = {
+        name: form.name || 'Anthropic OAuth',
+        type: 'oauth',
+        model: form.model,
+      }
+      const { id } = await postJSON<{ id: string }>(
+        '/ai-assistant/providers',
+        { body }
+      )
+      await activate(id)
+      setShowForm(false)
+      setForm({ ...INITIAL_FORM })
+      setTick(n => n + 1)
+    } catch (err: any) {
+      alert(err?.message || 'OAuth failed')
     } finally {
-      setTesting(false)
+      setLoading(false)
     }
   }
 
   const submit = async () => {
     if (!form.name.trim()) return
-    if (form.type === 'oauth') return // handled via startOAuth
     setLoading(true)
     try {
       if (editingId) {
@@ -167,6 +129,9 @@ export default function AiAssistantSettings() {
           body: JSON.stringify(body),
         })
       } else {
+        if (form.type === 'oauth') {
+          return startOAuth()
+        }
         const body: Record<string, string> = {
           name: form.name,
           type: form.type,
@@ -180,7 +145,6 @@ export default function AiAssistantSettings() {
       setShowForm(false)
       setEditingId(null)
       setForm({ ...INITIAL_FORM })
-      setTestResult(null)
       setTick(n => n + 1)
     } catch (err: any) {
       alert(err?.message || 'Failed')
@@ -198,10 +162,6 @@ export default function AiAssistantSettings() {
       baseUrl: p.baseUrl || '',
       model: p.model,
     })
-    setOauthUrl(null)
-    setOauthCode('')
-    setOauthError(null)
-    setTestResult(null)
     setShowForm(true)
   }
 
@@ -209,10 +169,6 @@ export default function AiAssistantSettings() {
     setShowForm(false)
     setEditingId(null)
     setForm({ ...INITIAL_FORM })
-    setOauthUrl(null)
-    setOauthCode('')
-    setOauthError(null)
-    setTestResult(null)
   }
 
   return (
@@ -277,10 +233,6 @@ export default function AiAssistantSettings() {
           onClick={() => {
             setEditingId(null)
             setForm({ ...INITIAL_FORM })
-            setOauthUrl(null)
-            setOauthCode('')
-            setOauthError(null)
-            setTestResult(null)
             setShowForm(true)
           }}
         >
@@ -317,91 +269,16 @@ export default function AiAssistantSettings() {
             />
           </div>
 
-          {form.type === 'oauth' && (
-            <div className="cc-oauth-section">
-              {!oauthUrl ? (
-                <button
-                  type="button"
-                  className="cc-btn cc-btn-primary"
-                  onClick={startOAuth}
-                  disabled={oauthBusy}
-                >
-                  {oauthBusy ? 'Connecting…' : 'Connect Claude'}
-                </button>
-              ) : (
-                <form onSubmit={handleOAuthSubmit} className="cc-oauth-form">
-                  <p className="cc-oauth-hint">
-                    After authorizing, paste the code Anthropic displays here.
-                  </p>
-                  <input
-                    type="text"
-                    className="cc-input"
-                    placeholder="Paste authorization code"
-                    value={oauthCode}
-                    onChange={e => setOauthCode(e.target.value)}
-                    autoFocus
-                  />
-                  <div className="cc-row-gap">
-                    <button
-                      type="submit"
-                      className="cc-btn cc-btn-primary"
-                      disabled={oauthBusy || !oauthCode.trim()}
-                    >
-                      {oauthBusy ? '…' : 'Submit code'}
-                    </button>
-                    <button
-                      type="button"
-                      className="cc-btn cc-btn-ghost"
-                      onClick={() =>
-                        oauthUrl &&
-                        window.open(oauthUrl, '_blank', 'noopener')
-                      }
-                    >
-                      Reopen page
-                    </button>
-                  </div>
-                </form>
-              )}
-              {oauthError && (
-                <div className="cc-error">{oauthError}</div>
-              )}
-            </div>
-          )}
-
           {(form.type === 'api_key' || form.type === 'custom') && (
-            <>
-              <div className="cc-field">
-                <label>API Key</label>
-                <input
-                  type="password"
-                  value={form.apiKey}
-                  onChange={e =>
-                    setForm({ ...form, apiKey: e.target.value })
-                  }
-                  placeholder="sk-ant-api03-..."
-                />
-              </div>
-
-              <button
-                type="button"
-                className="cc-btn cc-btn-test"
-                onClick={testConnection}
-                disabled={testing || !form.apiKey}
-              >
-                {testing ? 'Testing…' : 'Test Connection'}
-              </button>
-              {testResult && (
-                <div
-                  className={
-                    testResult === 'Connection OK'
-                      ? 'cc-test-ok'
-                      : 'cc-test-fail'
-                  }
-                >
-                  {testResult}
-                </div>
-              )}
-            </>
+            <div className="cc-field">
+              <label>API Key</label>
+              <input
+                type="password"
+                value={form.apiKey}
+                onChange={e => setForm({ ...form, apiKey: e.target.value })}
+                placeholder="sk-ant-api03-..."
+              />
+            </div>
           )}
 
           {form.type === 'custom' && (
@@ -410,9 +287,7 @@ export default function AiAssistantSettings() {
               <input
                 type="text"
                 value={form.baseUrl}
-                onChange={e =>
-                  setForm({ ...form, baseUrl: e.target.value })
-                }
+                onChange={e => setForm({ ...form, baseUrl: e.target.value })}
                 placeholder="https://api.example.com"
               />
             </div>
@@ -430,27 +305,22 @@ export default function AiAssistantSettings() {
             </select>
           </div>
 
-          {form.type !== 'oauth' && (
-            <div className="cc-form-actions">
-              <button
-                className="cc-btn cc-btn-primary"
-                onClick={submit}
-                disabled={loading}
-              >
-                {editingId ? 'Save' : 'Add'}
-              </button>
-              <button className="cc-btn" onClick={cancelForm}>
-                Cancel
-              </button>
-            </div>
-          )}
-          {form.type === 'oauth' && (
-            <div className="cc-form-actions" style={{ marginTop: 0 }}>
-              <button className="cc-btn" onClick={cancelForm}>
-                Cancel
-              </button>
-            </div>
-          )}
+          <div className="cc-form-actions">
+            <button
+              className="cc-btn cc-btn-primary"
+              onClick={submit}
+              disabled={loading}
+            >
+              {editingId
+                ? 'Save'
+                : form.type === 'oauth'
+                  ? 'Connect Claude'
+                  : 'Add'}
+            </button>
+            <button className="cc-btn" onClick={cancelForm}>
+              Cancel
+            </button>
+          </div>
         </div>
       )}
     </div>

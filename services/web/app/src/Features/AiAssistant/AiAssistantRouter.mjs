@@ -70,11 +70,6 @@ export default {
       AuthenticationController.requireLogin(),
       AiAssistantSettingsController.activateProvider
     )
-    webRouter.post(
-      '/ai-assistant/providers/test',
-      AuthenticationController.requireLogin(),
-      AiAssistantSettingsController.testProvider
-    )
 
     // Per-project — require write access
     const writeAuth = AuthorizationMiddleware.ensureUserCanWriteProjectContent

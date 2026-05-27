@@ -125,35 +125,6 @@ $cc-error: #cf5454;
   max-width: 320px;
 }
 .cc-row-gap { display: flex; gap: 8px; justify-content: center; }
-.cc-oauth-hint {
-  font-size: 12px;
-  color: var(--content-secondary, #888);
-}
-.cc-oauth-section {
-  margin-bottom: 8px;
-}
-.cc-btn-test {
-  border: 1px solid var(--brand-primary, #0b89a1);
-  border-radius: 4px;
-  padding: 4px 10px;
-  font-size: 11px;
-  background: transparent;
-  color: var(--brand-primary, #0b89a1);
-  cursor: pointer;
-  margin-top: 4px;
-  &:hover { background: rgba(#0b89a1, 0.06); }
-  &:disabled { opacity: 0.5; cursor: default; }
-}
-.cc-test-ok {
-  font-size: 11px;
-  color: $cc-success;
-  margin-top: 4px;
-}
-.cc-test-fail {
-  font-size: 11px;
-  color: $cc-error;
-  margin-top: 4px;
-}
 
 // Buttons ------------------------------------------------------------
 .cc-btn {
