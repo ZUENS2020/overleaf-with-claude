@@ -193,9 +193,11 @@ class Session {
 
   // Translate Claude CLI stream-json events to the UI event shape.
   handleClaudeMessage(obj) {
-    // The CLI emits: { type: 'system'|'assistant'|'user'|'result', ... }
-    // For the UI we surface a flatter set.
     if (obj.type === 'assistant' && obj.message?.content) {
+      // Surface auth / rate-limit errors attached directly to the message.
+      if (obj.error) {
+        this.emit('error', { message: obj.error, type: 'api_error' })
+      }
       for (const block of obj.message.content) {
         if (block.type === 'text') {
           this.emit('assistant-message', { text: block.text })
@@ -207,8 +209,6 @@ class Session {
             name: block.name,
             input: block.input,
           })
-          // TodoWrite carries its list as input.todos. Surface it directly
-          // so the UI can render a checklist without re-parsing.
           if (block.name === 'TodoWrite' && Array.isArray(block.input?.todos)) {
             this.emit('todos', { todos: block.input.todos })
           }
@@ -229,12 +229,10 @@ class Session {
         usage: obj.usage || null,
         cost: obj.total_cost_usd || null,
       })
+      if (obj.is_error && obj.result) {
+        this.emit('error', { message: String(obj.result), type: 'result_error' })
+      }
     }
-    // The CLI may emit permission_request events when running in modes
-    // that require user approval. Untested against actual --print
-    // stream-json output (the CLI may never emit these in
-    // non-interactive mode); kept defensive so if they ever appear the
-    // UI receives them.
     if (obj.type === 'permission_request') {
       this.emit('permission-request', {
         id: obj.id || obj.request_id || newId(),
