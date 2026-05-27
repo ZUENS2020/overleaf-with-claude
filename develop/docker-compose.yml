@@ -76,12 +76,20 @@ services:
       dockerfile: services/filestore/Dockerfile
     env_file:
       - dev.env
-    #    environment:
-    #      - ENABLE_CONVERSIONS=true
+    environment:
+      # When clsi fetches a project asset that lives in the history
+      # blob store (any uploaded image/bin file under modern
+      # history-v1), it goes through filestore's /history/project/:id/
+      # hash/:hash endpoint. That endpoint needs to know where the
+      # blob bucket lives on disk, which is the same fs volume
+      # history-v1 itself mounts.
+      - OVERLEAF_EDITOR_PROJECT_BLOBS_BUCKET=/buckets/project_blobs
+      - OVERLEAF_EDITOR_BLOBS_BUCKET=/buckets/blobs
     volumes:
       - filestore-public-files:/overleaf/services/filestore/public_files
       - filestore-template-files:/overleaf/services/filestore/template_files
       - filestore-uploads:/overleaf/services/filestore/uploads
+      - history-v1-buckets:/buckets
 
   history-v1:
     build:
