@@ -1162,7 +1162,7 @@ function Composer({
     const wantSend = useCtrlEnter
       ? e.key === 'Enter' && (e.ctrlKey || e.metaKey)
       : e.key === 'Enter' && !e.shiftKey
-    if (wantSend) {
+    if (wantSend && !e.nativeEvent.isComposing) {
       e.preventDefault()
       onSend()
     }
