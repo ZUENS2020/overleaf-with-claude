@@ -8,7 +8,6 @@ import * as ClaudeAuth from './ClaudeAuth.mjs'
 import * as TokenStore from './TokenStore.mjs'
 import AiAssistantManager from './AiAssistantManager.mjs'
 import ProjectEntityHandler from '../Project/ProjectEntityHandler.mjs'
-import DocumentUpdaterHandler from '../DocumentUpdater/DocumentUpdaterHandler.mjs'
 import SessionStore from './SessionStore.mjs'
 
 function enabled() {
@@ -111,47 +110,6 @@ export default {
       res.json({ ok: true })
     } catch (err) {
       logger.warn({ err, userId, projectId }, 'ai-assistant permission response failed')
-      res.status(500).json({ error: err.message })
-    }
-  },
-
-  async revertFile(req, res) {
-    if (!enabled()) return res.status(503).json({ error: 'disabled' })
-    const userId = requireUser(req, res)
-    if (!userId) return
-    const projectId = req.params.Project_id
-    const { path } = req.body || {}
-    if (!path || typeof path !== 'string') {
-      return res.status(400).json({ error: 'missing_path' })
-    }
-    try {
-      const original = AiAssistantManager.getFileOriginal(
-        userId,
-        projectId,
-        path
-      )
-      if (original == null) {
-        // No snapshot — either the session ended, the file wasn't
-        // touched by Claude, or we already reverted it.
-        return res.status(409).json({ error: 'no_snapshot' })
-      }
-      const docs = await ProjectEntityHandler.promises.getAllDocs(projectId)
-      const doc = docs['/' + path.replace(/^\/+/, '')]
-      if (!doc) return res.status(404).json({ error: 'file_not_found' })
-
-      await DocumentUpdaterHandler.promises.setDocument(
-        projectId,
-        doc._id.toString(),
-        userId,
-        original.split('\n'),
-        'ai-assistant-revert'
-      )
-      // Drop the snapshot so the next Claude edit re-captures the
-      // (now-reverted) baseline.
-      AiAssistantManager.clearFileOriginal(userId, projectId, path)
-      res.json({ ok: true })
-    } catch (err) {
-      logger.warn({ err, userId, projectId, path }, 'ai-assistant revert file failed')
       res.status(500).json({ error: err.message })
     }
   },

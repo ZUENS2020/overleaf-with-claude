@@ -386,27 +386,6 @@ $cc-error: #cf5454;
   color: var(--content-secondary, #888);
   font-style: italic;
   padding: 2px 4px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  > span {
-    flex: 1 1 auto;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-}
-.cc-file-revert {
-  font-size: 11px;
-  font-style: normal;
-  background: transparent;
-  color: $cc-accent;
-  border: 1px solid $cc-accent;
-  border-radius: 4px;
-  padding: 1px 8px;
-  cursor: pointer;
-  flex: 0 0 auto;
-  &:hover { background: $cc-accent-dim; }
 }
 
 // Composer -----------------------------------------------------------
@@ -615,43 +594,6 @@ $cc-error: #cf5454;
   &:hover { background: var(--bg-light-secondary, #e0e0e0); }
 }
 
-// File diff card ------------------------------------------------------
-.cc-diff {
-  border: 1px solid var(--border-divider, #e0e0e0);
-  border-radius: 6px;
-  background: var(--bg-light-secondary, #fafafa);
-  font-size: 12px;
-  summary {
-    list-style: none;
-    cursor: pointer;
-    user-select: none;
-    padding: 6px 10px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    &::-webkit-details-marker { display: none; }
-  }
-}
-.cc-diff-body {
-  padding: 0 10px 10px;
-  border-top: 1px solid var(--border-divider, #e8e8e8);
-}
-.cc-diff-hunk {
-  background: #1e1e2e;
-  color: #cdd6f4;
-  border-radius: 4px;
-  padding: 6px 10px;
-  font-family: var(--font-monospace, ui-monospace, monospace);
-  font-size: 11px;
-  overflow-x: auto;
-  white-space: pre;
-  margin: 6px 0;
-}
-.cc-diff-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 6px;
-}
 
 // Image attachments in composer ----------------------------------------
 .cc-attachments {

@@ -49,21 +49,6 @@ type PermissionReq = {
   description?: string
 }
 
-type FileDiff = {
-  kind: 'file-diff'
-  path: string
-  hunks: DiffHunk[]
-  id: string
-}
-
-type DiffHunk = {
-  oldStart: number
-  oldLines: number
-  newStart: number
-  newLines: number
-  content: string
-}
-
 type ImageAttachment = {
   // `file` is absent on attachments rehydrated from a persisted
   // session — only the dataUrl is needed for display.
@@ -79,8 +64,7 @@ type Message =
   | ToolUse
   | PermissionReq
   | { kind: 'todos'; id: string; todos: Todo[] }
-  | FileDiff
-  | { kind: 'file-changed'; path: string; id: string; reverted?: boolean }
+  | { kind: 'file-changed'; path: string; id: string }
   | { kind: 'error'; message: string; id: string }
   | { kind: 'turn-divider'; id: string }
 
@@ -555,10 +539,6 @@ function Chat({
       const d = JSON.parse(ev.data)
       append({ kind: 'file-changed', path: d.path, id: newId() })
     })
-    es.addEventListener('file-diff', (ev: MessageEvent) => {
-      const d = JSON.parse(ev.data)
-      append({ kind: 'file-diff', path: d.path, hunks: d.hunks || [], id: newId() })
-    })
     es.addEventListener('permission-request', (ev: MessageEvent) => {
       const d = JSON.parse(ev.data)
       append({
@@ -602,28 +582,6 @@ function Chat({
       setMessages(curr =>
         curr.filter(m => !(m.kind === 'permission-request' && m.id === id))
       )
-    },
-    [projectId]
-  )
-
-  const revertFile = useCallback(
-    async (path: string, msgId: string) => {
-      try {
-        await postJSON(`/project/${projectId}/ai-assistant/revert-file`, {
-          body: { path },
-        })
-        setMessages(curr =>
-          curr.map(m => {
-            if (m.kind === 'file-diff' && m.id === msgId)
-              return { ...m, hunks: [] }
-            if (m.kind === 'file-changed' && m.id === msgId)
-              return { ...m, reverted: true }
-            return m
-          })
-        )
-      } catch (e: any) {
-        setError(e?.message || String(e))
-      }
     },
     [projectId]
   )
@@ -803,7 +761,6 @@ function Chat({
             key={m.id}
             m={m}
             onPermissionResponse={respondPermission}
-            onRevertFile={revertFile}
           />
         ))}
       </div>
@@ -843,11 +800,9 @@ function Chat({
 function MessageNode({
   m,
   onPermissionResponse,
-  onRevertFile,
 }: {
   m: Message
   onPermissionResponse: (id: string, allow: boolean) => void
-  onRevertFile: (path: string, msgId: string) => void
 }) {
   if (m.kind === 'turn-divider') return <div className="cc-turn-divider" />
   if (m.kind === 'user') {
@@ -900,34 +855,7 @@ function MessageNode({
   }
   if (m.kind === 'todos') return <TodosCard todos={m.todos} />
   if (m.kind === 'file-changed') {
-    return (
-      <div className="cc-file-changed">
-        <span>
-          {m.reverted ? '↺ reverted ' : '↪ edited '}
-          {m.path}
-        </span>
-        {!m.reverted && (
-          <button
-            type="button"
-            className="cc-file-revert"
-            onClick={() => onRevertFile(m.path, m.id)}
-            title="Revert this file to before Claude edited it in this session"
-          >
-            Revert
-          </button>
-        )}
-      </div>
-    )
-  }
-  if (m.kind === 'file-diff') {
-    return (
-      <FileDiffCard
-        path={m.path}
-        hunks={m.hunks}
-        id={m.id}
-        onRevert={onRevertFile}
-      />
-    )
+    return <div className="cc-file-changed">↪ edited {m.path}</div>
   }
   if (m.kind === 'error') return <div className="cc-error">{m.message}</div>
   return null
@@ -1002,46 +930,6 @@ function PermissionCard({
         </button>
       </div>
     </div>
-  )
-}
-
-function FileDiffCard({
-  path,
-  hunks,
-  id,
-  onRevert,
-}: {
-  path: string
-  hunks: DiffHunk[]
-  id: string
-  onRevert: (path: string, msgId: string) => void
-}) {
-  if (hunks.length === 0) {
-    return <div className="cc-file-changed">↪ edited {path}</div>
-  }
-  return (
-    <details className="cc-diff">
-      <summary>
-        <span className="cc-tool-name">Edit</span>
-        <span className="cc-tool-summary">{path}</span>
-      </summary>
-      <div className="cc-diff-body">
-        {hunks.map((h, i) => (
-          <pre key={i} className="cc-diff-hunk">
-            {h.content}
-          </pre>
-        ))}
-        <div className="cc-diff-actions">
-          <button
-            type="button"
-            className="cc-btn cc-btn-accept"
-            onClick={() => onRevert(path, id)}
-          >
-            Revert
-          </button>
-        </div>
-      </div>
-    </details>
   )
 }
 

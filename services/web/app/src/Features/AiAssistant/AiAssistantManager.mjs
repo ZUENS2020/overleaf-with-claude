@@ -158,10 +158,9 @@ class Session {
         logger.debug({ stderr: s.slice(0, 500) }, 'claude stderr')
       })
 
-      // File watcher → DocumentUpdater. Only the lightweight
-      // file-changed notice is emitted; the diff card stays disabled
-      // until FileSync starts snapshotting pre-edit content so the
-      // revert button can actually do something.
+      // File watcher → DocumentUpdater. Emits a small file-changed
+      // notice to the chat so the user sees which files Claude
+      // touched in this turn.
       try {
         this.fileSync = await FileSync.start({
           userId: this.userId,
@@ -348,21 +347,6 @@ export default {
   respondPermission(userId, projectId, permissionId, allow) {
     const s = get(userId, projectId)
     s.respondPermission(permissionId, allow)
-  },
-  // Pre-AI snapshot of a file, captured by FileSync the first time
-  // Claude touches it. Returns null when there's no live session for
-  // this (user, project) or when the file wasn't touched.
-  getFileOriginal(userId, projectId, relPath) {
-    const k = key(userId, projectId)
-    const s = sessions.get(k)
-    if (!s || !s.fileSync) return null
-    return s.fileSync.getOriginal(relPath)
-  },
-  clearFileOriginal(userId, projectId, relPath) {
-    const k = key(userId, projectId)
-    const s = sessions.get(k)
-    if (!s || !s.fileSync) return
-    s.fileSync.clearOriginal(relPath)
   },
   async stop(userId, projectId) {
     const k = key(userId, projectId)
