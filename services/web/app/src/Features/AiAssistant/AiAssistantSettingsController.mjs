@@ -222,4 +222,53 @@ export default {
       logger.warn({ err, userId }, 'migrateLegacyOAuth failed')
     }
   },
+
+  async testProvider(req, res) {
+    const userId = requireUser(req, res)
+    if (!userId) return
+    try {
+      const { type, apiKey, baseUrl } = req.body || {}
+      if (!apiKey) return res.status(400).json({ error: 'api_key_required' })
+
+      const targetUrl = (baseUrl || 'https://api.anthropic.com').replace(
+        /\/+$/,
+        ''
+      )
+      const resp = await fetch(`${targetUrl}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'claude-3-5-sonnet-20241022',
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+        signal: AbortSignal.timeout(10000),
+      })
+
+      if (resp.ok) {
+        res.json({ ok: true, message: 'Connection OK' })
+      } else if (resp.status === 401 || resp.status === 403) {
+        res.json({
+          ok: false,
+          message: 'Invalid API key (401/403)',
+        })
+      } else {
+        const body = await resp.text().catch(() => '')
+        res.json({
+          ok: false,
+          message: `HTTP ${resp.status}: ${body.slice(0, 100)}`,
+        })
+      }
+    } catch (err) {
+      logger.warn({ err, userId }, 'testProvider failed')
+      res.json({
+        ok: false,
+        message: err.cause?.code || err.message || 'Connection failed',
+      })
+    }
+  },
 }
