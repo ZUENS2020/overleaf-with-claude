@@ -19,6 +19,13 @@ bin/up
 
 Once the services are running, open <http://localhost/launchpad> to create the first admin account.
 
+> [!IMPORTANT]
+> `dev.env` must set `DOWNLOAD_HOST=http://clsi-nginx` (with scheme).
+> The bare hostname `clsi-nginx` is treated as a relative URL by
+> `new URL(...)` in `web/ClsiManager._parseOutputFiles`, which then
+> throws `ERR_INVALID_URL` on every compile, surfacing as a
+> "Server Error" with no output.
+
 ## AI assistant (Claude Code)
 
 The AI assistant rail panel runs the `claude` CLI as a subprocess of the
