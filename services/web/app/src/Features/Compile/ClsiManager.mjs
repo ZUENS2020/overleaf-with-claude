@@ -718,12 +718,16 @@ async function _postToClsi(
 function _parseOutputFiles(projectId, rawOutputFiles = []) {
   const outputFiles = []
   for (const file of rawOutputFiles) {
-    // Pass a dummy base so a scheme-less DOWNLOAD_HOST (e.g.
-    // `clsi-nginx/…`) from clsi doesn't crash the whole compile with
-    // ERR_INVALID_URL. We only ever want the pathname here anyway.
+    // clsi may emit a scheme-less URL when DOWNLOAD_HOST is set to a
+    // bare hostname (e.g. `clsi-nginx/project/...`). Prepend a fake
+    // scheme so new URL() doesn't throw and the host segment isn't
+    // mis-parsed as part of the path. We only ever read .pathname.
+    const raw = /^[a-z]+:\/\//i.test(file.url)
+      ? file.url
+      : 'http://' + file.url.replace(/^\/+/, '')
     const f = {
       path: file.path, // the clsi is now sending this to web
-      url: new URL(file.url, 'http://placeholder.invalid').pathname,
+      url: new URL(raw).pathname, // the location of the file on the clsi, excluding the host part
       type: file.type,
       build: file.build,
     }
