@@ -20,6 +20,8 @@ import * as TokenStore from './TokenStore.mjs'
 import * as ClaudeAuth from './ClaudeAuth.mjs'
 import ProjectEntityHandler from '../Project/ProjectEntityHandler.mjs'
 import FileSync from './FileSync.mjs'
+import { User } from '../../models/User.mjs'
+import * as TokenCrypto from './TokenCrypto.mjs'
 
 const ROOT = join(tmpdir(), 'overleaf-ai-assistant')
 const ALLOWED_MODES = new Set(['plan', 'bypassPermissions'])
@@ -31,6 +33,25 @@ function newId() {
 
 function key(userId, projectId) {
   return `${userId}:${projectId}`
+}
+
+async function resolveActiveProvider(userId) {
+  const user = await User.findById(userId, { aiAssistant: 1 }).exec()
+  const providers = user?.aiAssistant?.providers || []
+  const active = providers.find(p => p.isActive)
+  if (!active) return null
+
+  if (active.apiKey) {
+    try {
+      const decrypted = await TokenCrypto.open(active.apiKey)
+      active.apiKey = typeof decrypted === 'string' ? decrypted : JSON.parse(decrypted.toString())
+      if (typeof active.apiKey !== 'string') active.apiKey = String(active.apiKey)
+    } catch {
+      throw new Error('failed to decrypt api key')
+    }
+  }
+
+  return active
 }
 
 class Session {
@@ -75,19 +96,21 @@ class Session {
   async hydrateCwd() {
     await rm(this.cwd, { recursive: true, force: true })
     await mkdir(this.cwd, { recursive: true })
-    const credDir = join(this.cwd, '.claude')
-    await mkdir(credDir, { recursive: true })
 
-    // Write OAuth credentials so the CLI picks them up via HOME=cwd.
-    const tok = await TokenStore.ensureFresh(this.userId)
-    if (!tok) throw new Error('not_connected')
-    await writeFile(
-      join(credDir, '.credentials.json'),
-      JSON.stringify(ClaudeAuth.toCredentialsFile(tok))
-    )
+    this._provider = await resolveActiveProvider(this.userId)
+    if (!this._provider) throw new Error('not_connected')
 
-    // Copy project docs in. Binary file assets (filestore) are out of
-    // scope for the first cut — Claude operates on .tex/.bib/etc only.
+    if (this._provider.type === 'oauth') {
+      const credDir = join(this.cwd, '.claude')
+      await mkdir(credDir, { recursive: true })
+      const tok = await TokenStore.ensureFresh(this.userId)
+      if (!tok) throw new Error('not_connected')
+      await writeFile(
+        join(credDir, '.credentials.json'),
+        JSON.stringify(ClaudeAuth.toCredentialsFile(tok))
+      )
+    }
+
     const docs = await ProjectEntityHandler.promises.getAllDocs(this.projectId)
     for (const [relPath, doc] of Object.entries(docs)) {
       const fullPath = join(this.cwd, relPath.replace(/^\//, ''))
@@ -106,11 +129,11 @@ class Session {
     this.permissionMode = ALLOWED_MODES.has(opts.permissionMode)
       ? opts.permissionMode
       : 'bypassPermissions'
-    const model = opts.model || 'sonnet'
     this.starting = (async () => {
       this.emit('status', { state: 'starting' })
       await this.hydrateCwd()
 
+      const model = this._provider?.model || opts.model || 'sonnet'
       const bin = Settings.aiAssistant?.claudeBin || 'claude'
       const args = [
         '--print',
@@ -123,8 +146,19 @@ class Session {
       const env = {
         ...process.env,
         HOME: this.cwd,
-        // Drop API key so the CLI uses OAuth credentials.
         ANTHROPIC_API_KEY: '',
+      }
+
+      if (this._provider) {
+        if (this._provider.type === 'api_key' || this._provider.type === 'custom') {
+          env.ANTHROPIC_API_KEY = this._provider.apiKey
+          if (this._provider.baseUrl) {
+            env.ANTHROPIC_BASE_URL = this._provider.baseUrl
+          }
+        }
+        if (this._provider.model && !opts.model) {
+          opts.model = this._provider.model
+        }
       }
       logger.info(
         { userId: this.userId, projectId: this.projectId, bin },
@@ -193,9 +227,11 @@ class Session {
 
   // Translate Claude CLI stream-json events to the UI event shape.
   handleClaudeMessage(obj) {
-    // The CLI emits: { type: 'system'|'assistant'|'user'|'result', ... }
-    // For the UI we surface a flatter set.
     if (obj.type === 'assistant' && obj.message?.content) {
+      // Surface auth / rate-limit errors attached directly to the message.
+      if (obj.error) {
+        this.emit('error', { message: obj.error, type: 'api_error' })
+      }
       for (const block of obj.message.content) {
         if (block.type === 'text') {
           this.emit('assistant-message', { text: block.text })
@@ -207,8 +243,6 @@ class Session {
             name: block.name,
             input: block.input,
           })
-          // TodoWrite carries its list as input.todos. Surface it directly
-          // so the UI can render a checklist without re-parsing.
           if (block.name === 'TodoWrite' && Array.isArray(block.input?.todos)) {
             this.emit('todos', { todos: block.input.todos })
           }
@@ -229,12 +263,10 @@ class Session {
         usage: obj.usage || null,
         cost: obj.total_cost_usd || null,
       })
+      if (obj.is_error && obj.result) {
+        this.emit('error', { message: String(obj.result), type: 'result_error' })
+      }
     }
-    // The CLI may emit permission_request events when running in modes
-    // that require user approval. Untested against actual --print
-    // stream-json output (the CLI may never emit these in
-    // non-interactive mode); kept defensive so if they ever appear the
-    // UI receives them.
     if (obj.type === 'permission_request') {
       this.emit('permission-request', {
         id: obj.id || obj.request_id || newId(),
