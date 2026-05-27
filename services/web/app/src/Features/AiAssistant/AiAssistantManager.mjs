@@ -106,6 +106,7 @@ class Session {
     this.permissionMode = ALLOWED_MODES.has(opts.permissionMode)
       ? opts.permissionMode
       : 'bypassPermissions'
+    const model = opts.model || 'sonnet'
     this.starting = (async () => {
       this.emit('status', { state: 'starting' })
       await this.hydrateCwd()
@@ -117,6 +118,7 @@ class Session {
         '--output-format', 'stream-json',
         '--verbose',
         '--permission-mode', this.permissionMode,
+        '--model', model,
       ]
       const env = {
         ...process.env,
@@ -330,10 +332,10 @@ function get(userId, projectId) {
 }
 
 export default {
-  async ensureStarted(userId, projectId, sendInitial) {
+  async ensureStarted(userId, projectId, sendInitial, opts = {}) {
     const s = get(userId, projectId)
     if (!s.proc && !s.starting) {
-      await s.start()
+      await s.start(opts)
     } else if (s.starting) {
       await s.starting
     }
@@ -361,5 +363,16 @@ export default {
     if (!s) return
     await s.stop()
     sessions.delete(k)
+  },
+  async stopAllForUser(userId) {
+    const prefix = `${userId}:`
+    const stops = []
+    for (const [k, s] of sessions) {
+      if (k.startsWith(prefix)) {
+        stops.push(s.stop().catch(() => {}))
+        sessions.delete(k)
+      }
+    }
+    await Promise.all(stops)
   },
 }

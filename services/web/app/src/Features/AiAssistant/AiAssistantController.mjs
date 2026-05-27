@@ -9,6 +9,9 @@ import * as TokenStore from './TokenStore.mjs'
 import AiAssistantManager from './AiAssistantManager.mjs'
 import ProjectEntityHandler from '../Project/ProjectEntityHandler.mjs'
 import SessionStore from './SessionStore.mjs'
+import { User } from '../../models/User.mjs'
+
+const ALLOWED_MODELS = new Set(['sonnet', 'opus', 'haiku'])
 
 function enabled() {
   return !!Settings.aiAssistant?.claudeBin
@@ -71,9 +74,32 @@ export default {
     if (!enabled()) return res.status(503).json({ error: 'disabled' })
     const userId = requireUser(req, res)
     if (!userId) return
-    await AiAssistantManager.stop(userId, req.params.Project_id).catch(() => {})
+    await AiAssistantManager.stopAllForUser(userId)
     await TokenStore.clear(userId)
     res.json({ ok: true })
+  },
+
+  async getPreferences(req, res) {
+    const userId = requireUser(req, res)
+    if (!userId) return
+    const user = await User.findById(userId, { 'aiAssistant.preferredModel': 1 }).exec()
+    res.json({
+      preferredModel: user?.aiAssistant?.preferredModel || 'sonnet',
+    })
+  },
+
+  async updatePreferences(req, res) {
+    const userId = requireUser(req, res)
+    if (!userId) return
+    const { preferredModel } = req.body || {}
+    if (!preferredModel || !ALLOWED_MODELS.has(preferredModel)) {
+      return res.status(400).json({ error: 'invalid_model', allowed: [...ALLOWED_MODELS] })
+    }
+    await User.updateOne(
+      { _id: userId },
+      { $set: { 'aiAssistant.preferredModel': preferredModel } }
+    ).exec()
+    res.json({ ok: true, preferredModel })
   },
 
   async sendMessage(req, res) {
@@ -287,9 +313,15 @@ export default {
     const heartbeat = setInterval(() => res.write(': ping\n\n'), 15000)
 
     try {
-      await AiAssistantManager.ensureStarted(userId, projectId, send)
+      let model = 'sonnet'
+      try {
+        const user = await User.findById(userId, { 'aiAssistant.preferredModel': 1 }).exec()
+        model = user?.aiAssistant?.preferredModel || 'sonnet'
+      } catch {}
+      await AiAssistantManager.ensureStarted(userId, projectId, send, { model })
     } catch (err) {
-      send('error', { message: err.message })
+      const errorType = err.message === 'not_connected' ? 'not_connected' : 'internal_error'
+      send('error', { message: err.message, type: errorType })
       clearInterval(heartbeat)
       res.end()
       return

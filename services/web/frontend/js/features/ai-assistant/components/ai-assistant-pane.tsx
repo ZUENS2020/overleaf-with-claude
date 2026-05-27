@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { marked } from 'marked'
 import { useProjectContext } from '@/shared/context/project-context'
+import { usePermissionsContext } from '@/features/ide-react/context/permissions-context'
 import {
   getJSON,
   postJSON,
@@ -25,6 +26,12 @@ type OauthStatus = {
   connected: boolean
   account: string | null
 }
+
+const MODEL_OPTIONS: { value: string; label: string }[] = [
+  { value: 'sonnet', label: 'Sonnet' },
+  { value: 'opus', label: 'Opus' },
+  { value: 'haiku', label: 'Haiku' },
+]
 
 type Todo = {
   content: string
@@ -122,13 +129,18 @@ function renderMarkdown(src: string): string {
 
 export const AiAssistantPane = () => {
   const { projectId } = useProjectContext()
+  const { write } = usePermissionsContext()
   const [status, setStatus] = useState<OauthStatus | null>(null)
   const [refreshTick, setRefreshTick] = useState(0)
+  const [preferredModel, setPreferredModel] = useState<string>('sonnet')
 
   useEffect(() => {
     getJSON<OauthStatus>('/ai-assistant/oauth/status')
       .then(setStatus)
       .catch(() => setStatus({ enabled: false, connected: false, account: null }))
+    getJSON<{ preferredModel: string }>('/ai-assistant/preferences')
+      .then(r => setPreferredModel(r.preferredModel || 'sonnet'))
+      .catch(() => {})
   }, [refreshTick])
 
   if (!status) {
@@ -148,6 +160,20 @@ export const AiAssistantPane = () => {
       </div>
     )
   }
+  if (!write) {
+    return (
+      <div className="cc-panel">
+        <PanelHeader connectionState="disabled" model={preferredModel} />
+        <div className="cc-empty">
+          <img src={claudeLogoUrl} className="cc-logo-large" alt="" />
+          <h3>Read-only access</h3>
+          <p className="cc-empty-sub">
+            You need edit access to use the AI assistant.
+          </p>
+        </div>
+      </div>
+    )
+  }
   if (!status.connected) {
     return <ConnectClaude onConnected={() => setRefreshTick(n => n + 1)} />
   }
@@ -155,6 +181,16 @@ export const AiAssistantPane = () => {
     <Chat
       projectId={projectId}
       account={status.account}
+      preferredModel={preferredModel}
+      onModelChange={async (model: string) => {
+        try {
+          await putJSON('/ai-assistant/preferences', { body: { preferredModel: model } })
+          setPreferredModel(model)
+          try {
+            await postJSON(`/project/${projectId}/ai-assistant/stop`)
+          } catch {}
+        } catch {}
+      }}
       onDisconnect={() => setRefreshTick(n => n + 1)}
     />
   )
@@ -170,6 +206,7 @@ type SessionInfo = {
 function PanelHeader({
   connectionState,
   account,
+  model,
   onStop,
   onNew,
   onDisconnect,
@@ -177,6 +214,7 @@ function PanelHeader({
 }: {
   connectionState: 'loading' | 'disabled' | 'idle' | 'running' | 'error'
   account?: string | null
+  model?: string
   onStop?: () => void
   onNew?: () => void
   onDisconnect?: () => void
@@ -199,6 +237,7 @@ function PanelHeader({
       </div>
       <div className="cc-header-actions">
         {account && <span className="cc-header-account">{account}</span>}
+        {model && <span className="cc-header-model">{model}</span>}
         {onToggleSessions && (
           <button
             type="button"
@@ -410,10 +449,14 @@ function SessionList({
 function Chat({
   projectId,
   account,
+  preferredModel,
+  onModelChange,
   onDisconnect,
 }: {
   projectId: string
   account: string | null
+  preferredModel: string
+  onModelChange: (model: string) => void
   onDisconnect: () => void
 }) {
   const [messages, setMessages] = useState<Message[]>([])
@@ -737,6 +780,7 @@ function Chat({
       <PanelHeader
         connectionState={state}
         account={account}
+        model={preferredModel}
         onNew={messages.length > 0 || state === 'running' ? newConversation : undefined}
         onStop={state === 'running' ? stop : undefined}
         onDisconnect={disconnect}
@@ -769,6 +813,8 @@ function Chat({
         ensureFilesLoaded={loadFiles}
         mode={mode}
         setMode={setMode}
+        preferredModel={preferredModel}
+        onModelChange={onModelChange}
         useCtrlEnter={useCtrlEnter}
         toggleCtrlEnter={() => setUseCtrlEnter(v => !v)}
         onSend={() => send()}
@@ -983,6 +1029,8 @@ function Composer({
   ensureFilesLoaded,
   mode,
   setMode,
+  preferredModel,
+  onModelChange,
   useCtrlEnter,
   toggleCtrlEnter,
   onSend,
@@ -998,6 +1046,8 @@ function Composer({
   ensureFilesLoaded: () => void
   mode: PermissionMode
   setMode: (m: PermissionMode) => void
+  preferredModel: string
+  onModelChange: (m: string) => void
   useCtrlEnter: boolean
   toggleCtrlEnter: () => void
   onSend: () => void
@@ -1137,6 +1187,16 @@ function Composer({
             <span className="cc-mode-card-label">{o.label}</span>
           </button>
         ))}
+        <select
+          className="cc-model-select"
+          value={preferredModel}
+          onChange={e => onModelChange(e.target.value)}
+          title="Model"
+        >
+          {MODEL_OPTIONS.map(m => (
+            <option key={m.value} value={m.value}>{m.label}</option>
+          ))}
+        </select>
       </div>
       {images.length > 0 && (
         <div className="cc-attachments">

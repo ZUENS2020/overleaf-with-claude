@@ -26,61 +26,74 @@ export default {
       AiAssistantController.oauthDisconnect
     )
 
-    // Per-project session
+    // User preferences (per-user, not per-project)
+    webRouter.get(
+      '/ai-assistant/preferences',
+      AuthenticationController.requireLogin(),
+      AiAssistantController.getPreferences
+    )
+    webRouter.put(
+      '/ai-assistant/preferences',
+      AuthenticationController.requireLogin(),
+      AiAssistantController.updatePreferences
+    )
+
+    // Per-project — require write access
+    const writeAuth = AuthorizationMiddleware.ensureUserCanWriteProjectContent
     webRouter.get(
       '/project/:Project_id/ai-assistant/stream',
-      AuthorizationMiddleware.ensureUserCanReadProject,
+      writeAuth,
       AiAssistantController.stream
     )
     webRouter.post(
       '/project/:Project_id/ai-assistant/message',
-      AuthorizationMiddleware.ensureUserCanReadProject,
+      writeAuth,
       AiAssistantController.sendMessage
     )
     webRouter.post(
       '/project/:Project_id/ai-assistant/stop',
-      AuthorizationMiddleware.ensureUserCanReadProject,
+      writeAuth,
       AiAssistantController.stop
     )
     webRouter.get(
       '/project/:Project_id/ai-assistant/files',
-      AuthorizationMiddleware.ensureUserCanReadProject,
+      writeAuth,
       AiAssistantController.files
     )
     webRouter.post(
       '/project/:Project_id/ai-assistant/permission-response',
-      AuthorizationMiddleware.ensureUserCanReadProject,
+      writeAuth,
       AiAssistantController.permissionResponse
     )
     // Session management
     webRouter.get(
       '/project/:Project_id/ai-assistant/sessions',
-      AuthorizationMiddleware.ensureUserCanReadProject,
+      writeAuth,
       AiAssistantController.listSessions
     )
     webRouter.post(
       '/project/:Project_id/ai-assistant/sessions',
-      AuthorizationMiddleware.ensureUserCanReadProject,
+      writeAuth,
       AiAssistantController.createSession
     )
     webRouter.post(
       '/project/:Project_id/ai-assistant/sessions/:sessionId/rename',
-      AuthorizationMiddleware.ensureUserCanReadProject,
+      writeAuth,
       AiAssistantController.renameSession
     )
     webRouter.delete(
       '/project/:Project_id/ai-assistant/sessions/:sessionId',
-      AuthorizationMiddleware.ensureUserCanReadProject,
+      writeAuth,
       AiAssistantController.deleteSession
     )
     webRouter.get(
       '/project/:Project_id/ai-assistant/sessions/:sessionId/messages',
-      AuthorizationMiddleware.ensureUserCanReadProject,
+      writeAuth,
       AiAssistantController.getSessionMessages
     )
     webRouter.put(
       '/project/:Project_id/ai-assistant/sessions/:sessionId/messages',
-      AuthorizationMiddleware.ensureUserCanReadProject,
+      writeAuth,
       AiAssistantController.saveSessionMessages
     )
   },

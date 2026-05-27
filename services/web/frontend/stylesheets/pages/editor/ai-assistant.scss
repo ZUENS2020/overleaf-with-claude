@@ -56,6 +56,12 @@ $cc-error: #cf5454;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.cc-header-model {
+  font-size: 11px;
+  color: var(--brand-primary, #0b89a1);
+  margin-left: 4px;
+  text-transform: capitalize;
+}
 .cc-icon-btn {
   background: transparent;
   border: 1px solid transparent;
@@ -396,12 +402,13 @@ $cc-error: #cf5454;
   padding: 6px 8px 8px;
 }
 .cc-mode-row {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  display: flex;
   gap: 6px;
   margin-bottom: 8px;
+  align-items: stretch;
 }
 .cc-mode-card {
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -427,6 +434,30 @@ $cc-error: #cf5454;
   border-color: $cc-accent;
   box-shadow: 0 0 0 1px $cc-accent-dim;
   .cc-mode-card-label { color: $cc-accent; }
+}
+.cc-model-select {
+  appearance: none;
+  background: var(--bg-light-primary, #fff);
+  color: var(--content-primary, #1c1c1c);
+  border: 1.5px solid var(--border-divider, #d8d8d8);
+  border-radius: 8px;
+  padding: 5px 24px 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%23666' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  &:hover {
+    background-color: var(--bg-light-tertiary, #f5f5f5);
+    border-color: var(--content-secondary, #aaa);
+  }
+  &:focus {
+    outline: 2px solid $cc-accent-dim;
+    outline-offset: -1px;
+    border-color: $cc-accent;
+  }
 }
 .cc-composer-inner {
   display: flex;
