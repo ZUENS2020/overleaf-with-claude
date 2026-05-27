@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import getJSON from '@/infrastructure/fetch-json'
-import postJSON from '@/infrastructure/post-json'
+import {
+  getJSON,
+  postJSON,
+} from '@/infrastructure/fetch-json'
 
 type ProviderType = 'oauth' | 'api_key' | 'custom'
 
