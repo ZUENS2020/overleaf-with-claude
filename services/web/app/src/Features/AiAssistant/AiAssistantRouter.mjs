@@ -1,6 +1,7 @@
 import AuthenticationController from '../Authentication/AuthenticationController.mjs'
 import AuthorizationMiddleware from '../Authorization/AuthorizationMiddleware.mjs'
 import AiAssistantController from './AiAssistantController.mjs'
+import AiAssistantSettingsController from './AiAssistantSettingsController.mjs'
 
 export default {
   apply(webRouter) {
@@ -36,6 +37,38 @@ export default {
       '/ai-assistant/preferences',
       AuthenticationController.requireLogin(),
       AiAssistantController.updatePreferences
+    )
+
+    // Provider management (per-user)
+    webRouter.get(
+      '/ai-assistant/connection',
+      AuthenticationController.requireLogin(),
+      AiAssistantSettingsController.getConnection
+    )
+    webRouter.get(
+      '/ai-assistant/providers',
+      AuthenticationController.requireLogin(),
+      AiAssistantSettingsController.listProviders
+    )
+    webRouter.post(
+      '/ai-assistant/providers',
+      AuthenticationController.requireLogin(),
+      AiAssistantSettingsController.createProvider
+    )
+    webRouter.put(
+      '/ai-assistant/providers/:id',
+      AuthenticationController.requireLogin(),
+      AiAssistantSettingsController.updateProvider
+    )
+    webRouter.delete(
+      '/ai-assistant/providers/:id',
+      AuthenticationController.requireLogin(),
+      AiAssistantSettingsController.deleteProvider
+    )
+    webRouter.post(
+      '/ai-assistant/providers/:id/activate',
+      AuthenticationController.requireLogin(),
+      AiAssistantSettingsController.activateProvider
     )
 
     // Per-project — require write access
