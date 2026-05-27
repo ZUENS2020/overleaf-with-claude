@@ -1,13 +1,23 @@
 import { zz } from '@overleaf/validation-tools'
 import Settings from '@overleaf/settings'
 
-// Tolerate a scheme-less host in Settings.apis.clsi.downloadHost /
-// Settings.apis.clsi.url. `new URL('clsi-nginx')` throws ERR_INVALID_URL
-// and would break every PDF / output-file fetch. If the value already
-// has a scheme we pass it through unchanged; otherwise we prepend
-// `http://` (which is what the dev compose intends anyway).
+// Tolerate a scheme-less / port-less host in
+// Settings.apis.clsi.downloadHost / Settings.apis.clsi.url. The
+// shipped clsi-nginx container's server block listens on 8080, but
+// `new URL('clsi-nginx')` defaults to port 80 (where nginx's stock
+// welcome server is — every output fetch then 404s). Prepend `http://`
+// if missing and attach :8080 when the host is the bare clsi-nginx
+// service name with no explicit port.
 function toAbsoluteUrl(host) {
-  return /^[a-z]+:\/\//i.test(host) ? host : 'http://' + host
+  let v = /^[a-z]+:\/\//i.test(host) ? host : 'http://' + host
+  // The shipped clsi-nginx listens on 8080. But settings.defaults.js
+  // forces `:80` when CLSI_LB_IP is set (a SaaS-style load-balancer
+  // assumption) and otherwise builds `http://${DOWNLOAD_HOST}:8080`,
+  // so depending on which env is set we get the wrong port or the
+  // right one. Normalize: any port (or missing port) on the
+  // clsi-nginx host is rewritten to 8080.
+  v = v.replace(/^(https?:\/\/clsi-nginx)(?::\d+)?(\/|$)/, '$1:8080$2')
+  return v
 }
 
 // Build zod schema once and use it below.
