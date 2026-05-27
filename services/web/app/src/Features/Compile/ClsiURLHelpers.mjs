@@ -1,6 +1,15 @@
 import { zz } from '@overleaf/validation-tools'
 import Settings from '@overleaf/settings'
 
+// Tolerate a scheme-less host in Settings.apis.clsi.downloadHost /
+// Settings.apis.clsi.url. `new URL('clsi-nginx')` throws ERR_INVALID_URL
+// and would break every PDF / output-file fetch. If the value already
+// has a scheme we pass it through unchanged; otherwise we prepend
+// `http://` (which is what the dev compose intends anyway).
+function toAbsoluteUrl(host) {
+  return /^[a-z]+:\/\//i.test(host) ? host : 'http://' + host
+}
+
 // Build zod schema once and use it below.
 const schema = {
   compileBackendClass: zz.compileBackendClass(),
@@ -28,7 +37,7 @@ export function getOutputZipURL(
 ) {
   compileBackendClass = schema.compileBackendClass.parse(compileBackendClass)
   clsiServerId = schema.optionalClsiServerId.parse(clsiServerId)
-  const url = new URL(Settings.apis.clsi.url)
+  const url = new URL(toAbsoluteUrl(Settings.apis.clsi.url))
   url.pathname = getFilePath(
     projectIdOrSubmissionId,
     userId,
@@ -56,7 +65,7 @@ export function getOutputFileURL(
   clsiServerId
 ) {
   clsiServerId = schema.optionalClsiServerId.parse(clsiServerId)
-  const url = new URL(Settings.apis.clsi.downloadHost)
+  const url = new URL(toAbsoluteUrl(Settings.apis.clsi.downloadHost))
   url.pathname = getFilePath(projectIdOrSubmissionId, userId, buildId, file)
   if (clsiServerId) url.searchParams.set('clsiserverid', clsiServerId)
   return url
