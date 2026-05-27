@@ -10,6 +10,7 @@ import AiAssistantManager from './AiAssistantManager.mjs'
 import ProjectEntityHandler from '../Project/ProjectEntityHandler.mjs'
 import SessionStore from './SessionStore.mjs'
 import { User } from '../../models/User.mjs'
+import AiAssistantSettingsController from './AiAssistantSettingsController.mjs'
 
 const ALLOWED_MODELS = new Set(['sonnet', 'opus', 'haiku'])
 
@@ -62,6 +63,7 @@ export default {
     if (!enabled()) return res.json({ enabled: false })
     const userId = requireUser(req, res)
     if (!userId) return
+    await AiAssistantSettingsController.migrateLegacyOAuth(userId).catch(() => {})
     const tok = await TokenStore.load(userId)
     res.json({
       enabled: true,
@@ -301,6 +303,7 @@ export default {
     const userId = requireUser(req, res)
     if (!userId) return
     const projectId = req.params.Project_id
+    await AiAssistantSettingsController.migrateLegacyOAuth(userId).catch(() => {})
     res.setHeader('content-type', 'text/event-stream')
     res.setHeader('cache-control', 'no-cache')
     res.setHeader('connection', 'keep-alive')
