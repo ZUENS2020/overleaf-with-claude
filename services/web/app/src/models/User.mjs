@@ -21,17 +21,6 @@ const refProviderSettingsSchema = {
   migrated: { type: Boolean, default: false },
 }
 
-const providerSchema = new Schema({
-  id: { type: String, required: true },
-  name: { type: String, required: true },
-  type: { type: String, required: true, enum: ['oauth', 'api_key', 'custom'] },
-  apiKey: { type: String, default: '' },
-  baseUrl: { type: String, default: '' },
-  model: { type: String, default: 'sonnet' },
-  isActive: { type: Boolean, default: false },
-  account: { type: String, default: '' },
-}, { _id: false })
-
 export const UserSchema = new Schema(
   {
     email: { type: String, default: '', maxlength: MAX_EMAIL_LENGTH },
@@ -259,7 +248,6 @@ export const UserSchema = new Schema(
       claudeOauth: { type: String },
       claudeAccount: { type: String },
       preferredModel: { type: String, default: 'sonnet' },
-      providers: { type: [providerSchema], default: [] },
     },
   },
   { minimize: false }
