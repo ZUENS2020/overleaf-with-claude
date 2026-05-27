@@ -22,6 +22,7 @@ import ProjectEntityHandler from '../Project/ProjectEntityHandler.mjs'
 import FileSync from './FileSync.mjs'
 
 const ROOT = join(tmpdir(), 'overleaf-ai-assistant')
+const ALLOWED_MODES = new Set(['plan', 'bypassPermissions'])
 const sessions = new Map() // key = `${userId}:${projectId}` -> Session
 
 function newId() {
@@ -98,7 +99,13 @@ class Session {
   async start(opts = {}) {
     if (this.proc) return
     if (this.starting) return this.starting
-    this.permissionMode = opts.permissionMode || 'default'
+    // Only two modes are exposed in the UI now: plan (read-only) and
+    // bypassPermissions (the default — full auto). Any other value
+    // (incl. older clients sending 'default' or 'acceptEdits') is
+    // coerced so the spawned CLI never sees an unsupported flag value.
+    this.permissionMode = ALLOWED_MODES.has(opts.permissionMode)
+      ? opts.permissionMode
+      : 'bypassPermissions'
     this.starting = (async () => {
       this.emit('status', { state: 'starting' })
       await this.hydrateCwd()

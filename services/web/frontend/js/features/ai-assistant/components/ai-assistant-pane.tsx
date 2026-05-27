@@ -18,7 +18,7 @@ import {
 import withErrorBoundary from '@/infrastructure/error-boundary'
 import claudeLogoUrl from '../assets/claude-logo.svg'
 
-type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
+type PermissionMode = 'plan' | 'bypassPermissions'
 
 type OauthStatus = {
   enabled: boolean
@@ -73,9 +73,7 @@ function newId() {
 }
 
 const MODE_OPTIONS: { value: PermissionMode; label: string }[] = [
-  { value: 'default', label: 'Ask' },
   { value: 'plan', label: 'Plan' },
-  { value: 'acceptEdits', label: 'Accept edits' },
   { value: 'bypassPermissions', label: 'Bypass' },
 ]
 
@@ -420,7 +418,7 @@ function Chat({
 }) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
-  const [mode, setMode] = useState<PermissionMode>('default')
+  const [mode, setMode] = useState<PermissionMode>('bypassPermissions')
   const [state, setState] = useState<'idle' | 'running' | 'error'>('idle')
   const [error, setError] = useState<string | null>(null)
   const [useCtrlEnter, setUseCtrlEnter] = useState(false)
