@@ -1,136 +1,113 @@
-<h1 align="center">
-  <br>
-  <a href="https://www.overleaf.com"><img src="doc/logo.png" alt="Overleaf" width="300"></a>
-</h1>
+# Overleaf + Claude Code AI Assistant
 
-<h4 align="center">An open-source online real-time collaborative LaTeX editor.</h4>
+An open-source online collaborative LaTeX editor with an integrated Claude Code AI assistant. Forked from [Overleaf Community Edition](https://github.com/overleaf/overleaf) (AGPL-3.0).
 
 <p align="center">
-  <a href="https://github.com/overleaf/overleaf/wiki">Wiki</a> •
-  <a href="https://www.overleaf.com/for/enterprises">Server Pro</a> •
-  <a href="#contributing">Contributing</a> •
-  <a href="https://mailchi.mp/overleaf.com/community-edition-and-server-pro">Mailing List</a> •
-  <a href="#authors">Authors</a> •
+  <a href="#features">Features</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#architecture">Architecture</a> •
+  <a href="#changes-from-upstream">Changes</a> •
   <a href="#license">License</a>
 </p>
 
-> **Note:** This is a modified version of [Overleaf Community Edition](https://github.com/overleaf/overleaf) with an integrated Claude Code AI assistant. Modifications are released under the same AGPL-3.0 license — see [Changes from upstream](#changes-from-upstream) below.
+## Features
 
-<img src="doc/screenshot.png" alt="A screenshot of a project being edited in Overleaf Community Edition">
-<p align="center">
-  Figure 1: A screenshot of a project being edited in Overleaf Community Edition.
-</p>
+### Claude Code AI Assistant
 
-## Claude Code AI Assistant
+- **Chat panel** — real-time SSE streaming conversation with Claude, side-by-side with your LaTeX project
+- **OAuth login** — each user connects their own Claude account (anthropic.com) via browser-based authorization
+- **Two permission modes** — **Plan** (read-only analysis) and **Bypass** (full-auto file edits, commands)
+- **Model selection** — Sonnet, Opus, or Haiku per user
+- **@ file picker** — mention project files with fuzzy-filter, file-type icons
+- **Image attachments** — paste or upload images into chat
+- **Session management** — multiple conversations per project, auto-titled, messages persisted in MongoDB
+- **Multi-tenant isolation** — per-user Claude credentials, sessions, and OAuth tokens; read-only collaborators see a block message
 
-This fork includes a lightweight AI assistant powered by [Claude Code](https://docs.anthropic.com/en/docs/claude-code). It adds a chat panel inside Overleaf's editor that connects to the `claude` CLI as an in-process subprocess — no Docker containers per user.
+### Overleaf CE Base
 
-### Features
+All features of Overleaf Community Edition: real-time collaborative editing, PDF preview, Git integration, track changes, project history, and more.
 
-- **Chat panel** — real-time streaming conversation with Claude inside Overleaf
-- **File editing** — Claude reads and edits project files, changes sync back via Overleaf's real-time pipeline
-- **@ file picker** — mention files with `@`, fuzzy-filtered with file-type icons
-- **/ command palette** — `/clear`, `/compact`, `/help`, `/model`, `/cost`
-- **Image attachments** — attach screenshots or images to messages
-- **Permission modes** — Ask (default), Plan, Accept edits, Bypass
-- **Permission popup** — approve or deny individual tool actions
-- **Inline diffs** — see file edits with Revert option
-- **Session management** — switch between conversations, auto-titled, stored in MongoDB
-- **OAuth login** — each user connects their own Claude account via in-browser PKCE flow
+## Quick Start
 
-### Architecture
-
-```
-┌────────────────────┐         ┌───────────────────────────────┐
-│  Overleaf frontend │         │           web service         │
-│                    │         │                               │
-│  ChatPane (React)  │◀──SSE──┤  AiAssistantController        │
-│  SessionList       │         │  AiAssistantManager            │
-│  Permission popup  │         │  SessionStore (MongoDB)        │
-│  Inline diffs      │         │    ↓ spawn / stream           │
-│  @ / menus         │         │  claude (CLI subprocess)      │
-└────────────────────┘         │    ↓ writes files             │
-                               │  FileSync → DocumentUpdater    │
-                               └───────────────────────────────┘
+```bash
+git clone https://github.com/ZUENS2020/overleaf-with-claude
+cd overleaf-with-claude
+./bin/setup.sh http://your-server-ip:8082
 ```
 
-### Setup
+`bin/setup.sh` auto-generates a `dev.env` with a random encryption key, builds frontend assets, and starts all services.
 
-1. Set `AI_ASSISTANT_TOKEN_KEY` in `dev.env` (generate with `openssl rand -hex 32`)
-2. Set `AI_ASSISTANT_CLAUDE_BIN=claude` in `dev.env`
-3. Install the `claude` CLI on the host or inside the web container
-4. Restart: `docker compose -p overleaf-claude restart web webpack`
-5. Open a project and click the Claude Code icon in the right panel
+Create an admin user:
+
+```bash
+docker exec -it overleaf-claude-web-1 node /overleaf/tools/cli create-admin
+```
+
+Open `http://your-server-ip:8082`, log in, open a project, and click the Claude icon in the sidebar.
+
+### Requirements
+
+- Docker + Docker Compose
+- ~4 GB RAM (8 GB recommended for large compiles)
+- Linux server (x86-64); macOS for local development
 
 ### Configuration
 
-| Variable | Default | Description |
-|---|---|---|
-| `AI_ASSISTANT_TOKEN_KEY` | — | 32-byte hex key for JWE token encryption (required) |
-| `AI_ASSISTANT_CLAUDE_BIN` | `claude` | Path to the claude CLI binary (empty = disabled) |
-| `AI_ASSISTANT_IDLE_MS` | `600000` | Idle timeout (ms) before subprocess is killed |
+All sensitive config lives in `develop/dev.env` (gitignored, auto-generated by setup):
 
-### Docs
+| Variable | Purpose |
+|----------|---------|
+| `AI_ASSISTANT_CLAUDE_BIN` | Path to Claude CLI (baked into image) |
+| `AI_ASSISTANT_TOKEN_KEY` | Encryption key for OAuth tokens (auto-generated) |
+| `AI_ASSISTANT_IDLE_MS` | Idle timeout before Claude sessions are killed |
+| `PUBLIC_URL` | Public-facing URL (include port if non-80) |
+| `DOWNLOAD_HOST` | CLSI download host (Docker service name) |
 
-- [Lightweight redesign doc](docs/ai-assistant-lightweight-design.md) — full architecture and security model
-- [Phase 2 spec](docs/superpowers/specs/2026-05-27-phase2-ai-assistant-design.md) — feature design details
+## Architecture
 
-## Community Edition
+```
+Browser                            Server
+──────                              ──────
+  Editor UI ─────POST──────────►  web:3000
+  SSE stream ◄──GET /stream────   (Node.js)
+  WebSocket  ◄──/socket.io/────   nginx:8082 ──► real-time:3026
+                                      │
+  AiAssistantPane (React)              ├─ AiAssistantController (OAuth, messages, sessions)
+  AiAssistantManager (subprocess)      ├─ AiAssistantManager  (spawns claude CLI)
+  SessionStore (MongoDB persistence)   ├─ TokenStore          (encrypted OAuth tokens)
+  FileSync  (chokidar → DocUpdater)    ├─ FileSync            (mirrors edits back to Overleaf)
+                                       └─ SessionStore        (conversation CRUD)
+```
 
-[Overleaf](https://www.overleaf.com) is an open-source online real-time collaborative LaTeX editor. We run a hosted version at [www.overleaf.com](https://www.overleaf.com), but you can also run your own local version, and contribute to the development of Overleaf.
+- Claude CLI runs as an in-process subprocess via `spawn()`, one per (user, project)
+- OAuth tokens encrypted with JWE (A256GCM) before storing in MongoDB
+- Frontend assets compiled via webpack in production mode, served directly (no dev server)
+- nginx proxies SSE streams without buffering, WebSocket upgrades to real-time service
 
-> [!CAUTION]
-> Overleaf Community Edition is intended for use in environments where **all** users are trusted. Community Edition is **not** appropriate for scenarios where isolation of users is required due to Sandbox Compiles not being available. When not using Sandboxed Compiles, users have full read and write access to the `sharelatex` container resources (filesystem, network, environment variables) when running LaTeX compiles.
+## Changes from Upstream
 
-For more information on Sandbox Compiles check out our [documentation](https://docs.overleaf.com/on-premises/configuration/overleaf-toolkit/server-pro-only-configuration/sandboxed-compiles).
+This fork modifies Overleaf Community Edition with the following additions:
 
-## Enterprise
+| Area | Change |
+|------|--------|
+| `services/web/app/src/Features/AiAssistant/` | New module: Claude CLI subprocess management, OAuth flow, SSE streaming, session persistence, token encryption |
+| `services/web/frontend/js/features/ai-assistant/` | New React components: chat panel, model selector, @ file picker, session list, permission mode selector |
+| `services/web/frontend/stylesheets/pages/editor/ai-assistant.scss` | Chat panel + settings styles |
+| `services/web/config/settings.defaults.js` | AI Assistant config: `claudeBin`, `tokenKey`, `idleMs` |
+| `services/web/app/src/models/User.mjs` | `aiAssistant` subdocument: OAuth tokens, preferred model, Claude account info |
+| `services/web/Dockerfile` | Claude CLI installed globally in dev/production targets |
+| `services/web/app/src/infrastructure/ExpressLocals.mjs` | Webpack manifest fallback for production mode |
+| `services/clsi/Dockerfile` | Added `texlive-lang-chinese` + `fonts-noto-cjk` for CJK support |
+| `develop/docker-compose.yml` | Added nginx reverse proxy, CLSI sandboxing disabled, production mode |
+| `develop/nginx/nginx.conf` | SSE stream buffering disabled, WebSocket proxy to real-time |
 
-If you want help installing and maintaining Overleaf in your lab or workplace, we offer an officially supported version called [Overleaf Server Pro](https://www.overleaf.com/for/enterprises). It also includes more features for security (SSO with LDAP or SAML), administration and collaboration (e.g. tracked changes). [Find out more!](https://www.overleaf.com/for/enterprises)
-
-## Keeping up to date
-
-Sign up to the [mailing list](https://mailchi.mp/overleaf.com/community-edition-and-server-pro) to get updates on Overleaf releases and development.
-
-## Installation
-
-We have detailed installation instructions in the [Overleaf Toolkit](https://github.com/overleaf/toolkit/).
-
-## Upgrading
-
-If you are upgrading from a previous version of Overleaf, please see the [Release Notes section on the Wiki](https://github.com/overleaf/overleaf/wiki#release-notes) for all of the versions between your current version and the version you are upgrading to.
-
-## Overleaf Docker Image
-
-This repo contains two dockerfiles, [`Dockerfile-base`](server-ce/Dockerfile-base), which builds the
-`sharelatex/sharelatex-base` image, and [`Dockerfile`](server-ce/Dockerfile) which builds the
-`sharelatex/sharelatex` (or "community") image.
-
-The Base image generally contains the basic dependencies like `wget`, plus `texlive`.
-We split this out because it's a pretty heavy set of
-dependencies, and it's nice to not have to rebuild all of that every time.
-
-The `sharelatex/sharelatex` image extends the base image and adds the actual Overleaf code
-and services.
-
-Use `make build-base` and `make build-community` from `server-ce/` to build these images.
-
-We use the [Phusion base-image](https://github.com/phusion/baseimage-docker)
-(which is extended by our `base` image) to provide us with a VM-like container
-in which to run the Overleaf services. Baseimage uses the `runit` service
-manager to manage services, and we add our init-scripts from the `server-ce/runit`
-folder.
-
-## Contributing
-
-Please see the [CONTRIBUTING](CONTRIBUTING.md) file for information on contributing to the development of Overleaf.
-
-## Authors
-
-[The Overleaf Team](https://www.overleaf.com/about)
+All modifications are released under AGPL-3.0. See [NOTICE.md](NOTICE.md) for full attribution.
 
 ## License
 
-The code in this repository is released under the GNU AFFERO GENERAL PUBLIC LICENSE, version 3. A copy can be found in the [`LICENSE`](LICENSE) file.
+This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0) — the same license as the upstream Overleaf Community Edition.
 
-Copyright (c) Overleaf, 2014-2025.
+- Original Overleaf Community Edition: Copyright (c) Overleaf / WriteLaTeX Limited
+- Fork modifications: Released under the same AGPL-3.0 license
+
+See [LICENSE](LICENSE) for full terms and [NOTICE.md](NOTICE.md) for modification details.
