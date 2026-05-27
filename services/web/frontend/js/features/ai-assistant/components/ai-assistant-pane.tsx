@@ -9,7 +9,12 @@ import {
 } from 'react'
 import { marked } from 'marked'
 import { useProjectContext } from '@/shared/context/project-context'
-import { getJSON, postJSON, deleteJSON } from '@/infrastructure/fetch-json'
+import {
+  getJSON,
+  postJSON,
+  putJSON,
+  deleteJSON,
+} from '@/infrastructure/fetch-json'
 import withErrorBoundary from '@/infrastructure/error-boundary'
 import claudeLogoUrl from '../assets/claude-logo.svg'
 
@@ -60,7 +65,9 @@ type DiffHunk = {
 }
 
 type ImageAttachment = {
-  file: File
+  // `file` is absent on attachments rehydrated from a persisted
+  // session — only the dataUrl is needed for display.
+  file?: File
   dataUrl: string
   id: string
 }
@@ -73,7 +80,7 @@ type Message =
   | PermissionReq
   | { kind: 'todos'; id: string; todos: Todo[] }
   | FileDiff
-  | { kind: 'file-changed'; path: string; id: string }
+  | { kind: 'file-changed'; path: string; id: string; reverted?: boolean }
   | { kind: 'error'; message: string; id: string }
   | { kind: 'turn-divider'; id: string }
 
@@ -442,6 +449,45 @@ function Chat({
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [showSessions, setShowSessions] = useState(false)
 
+  // Refs let the long-lived SSE handlers and the persist callback see
+  // the latest state without re-subscribing every render.
+  const sessionIdRef = useRef<string | null>(null)
+  const messagesRef = useRef<Message[]>([])
+  useEffect(() => {
+    sessionIdRef.current = sessionId
+  }, [sessionId])
+  useEffect(() => {
+    messagesRef.current = messages
+  }, [messages])
+
+  // Persist the current conversation to its session row. Strips the
+  // non-serializable `file: File` field from image attachments — we
+  // keep the base64 dataUrl which renders fine on reload.
+  const persistMessages = useCallback(async () => {
+    const sid = sessionIdRef.current
+    if (!sid) return
+    const serializable = messagesRef.current.map(m => {
+      if (m.kind === 'user' && m.images && m.images.length > 0) {
+        return {
+          ...m,
+          images: m.images.map(img => ({
+            id: img.id,
+            dataUrl: img.dataUrl,
+          })),
+        }
+      }
+      return m
+    })
+    try {
+      await putJSON(
+        `/project/${projectId}/ai-assistant/sessions/${sid}/messages`,
+        { body: { messages: serializable } }
+      )
+    } catch {
+      /* persistence is best-effort */
+    }
+  }, [projectId])
+
   const loadFiles = useCallback(async () => {
     if (files.length > 0) return
     try {
@@ -526,6 +572,9 @@ function Chat({
     es.addEventListener('turn-end', () => {
       setState('idle')
       append({ kind: 'turn-divider', id: newId() })
+      // Persist the conversation when each turn completes; the next
+      // tick lets the divider append before we snapshot.
+      setTimeout(() => persistMessages(), 0)
     })
     es.addEventListener('error', (ev: MessageEvent) => {
       const data = (ev as any).data
@@ -539,7 +588,7 @@ function Chat({
     })
     es.onerror = () => setState('idle')
     return () => es.close()
-  }, [projectId])
+  }, [projectId, persistMessages])
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight })
@@ -564,13 +613,17 @@ function Chat({
           body: { path },
         })
         setMessages(curr =>
-          curr.map(m =>
-            m.kind === 'file-diff' && m.id === msgId
-              ? { ...m, hunks: [] }
-              : m
-          )
+          curr.map(m => {
+            if (m.kind === 'file-diff' && m.id === msgId)
+              return { ...m, hunks: [] }
+            if (m.kind === 'file-changed' && m.id === msgId)
+              return { ...m, reverted: true }
+            return m
+          })
         )
-      } catch {}
+      } catch (e: any) {
+        setError(e?.message || String(e))
+      }
     },
     [projectId]
   )
@@ -592,7 +645,7 @@ function Chat({
         const body: any = { text, permissionMode: mode }
         if (sentImages.length > 0) {
           body.images = sentImages.map(img => ({
-            mediaType: img.file.type,
+            mediaType: img.file?.type || 'image/png',
             data: img.dataUrl.split(',')[1],
           }))
         }
@@ -630,6 +683,8 @@ function Chat({
   }, [projectId])
 
   const newConversation = useCallback(async () => {
+    // Snapshot the outgoing conversation before clearing.
+    await persistMessages()
     await stop()
     setMessages([])
     try {
@@ -641,7 +696,7 @@ function Chat({
     } catch {
       setSessionId(null)
     }
-  }, [stop, projectId, loadSessions])
+  }, [stop, projectId, loadSessions, persistMessages])
 
   const disconnect = useCallback(async () => {
     try {
@@ -689,17 +744,25 @@ function Chat({
           sessions={sessions}
           activeId={sessionId}
           onSelect={async id => {
-            // Backend keeps ONE CLI subprocess per (user, project), so
-            // switching session must kill it — otherwise the next
-            // message goes to the previous conversation's context.
-            // Conversation history is not persisted yet (TODO), so this
-            // is effectively "start fresh under the chosen title".
+            // Persist the OUTGOING session before swapping. The
+            // backend keeps ONE CLI subprocess per (user, project), so
+            // we also have to kill it — otherwise the next message
+            // goes to the previous conversation's in-CLI context.
+            await persistMessages()
             try {
               await postJSON(`/project/${projectId}/ai-assistant/stop`)
             } catch {}
             setState('idle')
             setSessionId(id)
-            setMessages([])
+            // Load the chosen session's saved transcript.
+            try {
+              const r = await getJSON<{ messages: Message[] }>(
+                `/project/${projectId}/ai-assistant/sessions/${id}/messages`
+              )
+              setMessages(r.messages || [])
+            } catch {
+              setMessages([])
+            }
             setShowSessions(false)
           }}
           onDelete={async (id) => {
@@ -837,7 +900,24 @@ function MessageNode({
   }
   if (m.kind === 'todos') return <TodosCard todos={m.todos} />
   if (m.kind === 'file-changed') {
-    return <div className="cc-file-changed">↪ edited {m.path}</div>
+    return (
+      <div className="cc-file-changed">
+        <span>
+          {m.reverted ? '↺ reverted ' : '↪ edited '}
+          {m.path}
+        </span>
+        {!m.reverted && (
+          <button
+            type="button"
+            className="cc-file-revert"
+            onClick={() => onRevertFile(m.path, m.id)}
+            title="Revert this file to before Claude edited it in this session"
+          >
+            Revert
+          </button>
+        )}
+      </div>
+    )
   }
   if (m.kind === 'file-diff') {
     return (

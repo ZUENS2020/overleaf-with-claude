@@ -266,17 +266,23 @@ class Session {
     this.emit('user-message', { text })
   }
 
-  // Write a permission response back to the CLI's stdin.
-  // The user approved or denied a permission request from the CLI.
+  // Provisional / untested. The claude CLI in `--print` non-interactive
+  // stream-json mode applies whatever --permission-mode was passed at
+  // spawn and does NOT prompt the caller for tool-by-tool approval, so
+  // in practice `permission_request` events do not appear in the
+  // output stream and this method is never reached. The wiring stays
+  // in place so that if/when the CLI adds an out-of-band permission
+  // protocol over stdin we can adopt it without rewriting the UI; the
+  // envelope shape below is a guess that will need to match whatever
+  // the CLI actually accepts.
   respondPermission(permissionId, allow) {
+    if (!this.proc?.stdin) return
     const msg = {
       type: 'permission_response',
       id: permissionId,
       allow,
     }
-    if (this.proc?.stdin) {
-      this.proc.stdin.write(JSON.stringify(msg) + '\n')
-    }
+    this.proc.stdin.write(JSON.stringify(msg) + '\n')
   }
 
   async stop() {
@@ -342,6 +348,21 @@ export default {
   respondPermission(userId, projectId, permissionId, allow) {
     const s = get(userId, projectId)
     s.respondPermission(permissionId, allow)
+  },
+  // Pre-AI snapshot of a file, captured by FileSync the first time
+  // Claude touches it. Returns null when there's no live session for
+  // this (user, project) or when the file wasn't touched.
+  getFileOriginal(userId, projectId, relPath) {
+    const k = key(userId, projectId)
+    const s = sessions.get(k)
+    if (!s || !s.fileSync) return null
+    return s.fileSync.getOriginal(relPath)
+  },
+  clearFileOriginal(userId, projectId, relPath) {
+    const k = key(userId, projectId)
+    const s = sessions.get(k)
+    if (!s || !s.fileSync) return
+    s.fileSync.clearOriginal(relPath)
   },
   async stop(userId, projectId) {
     const k = key(userId, projectId)

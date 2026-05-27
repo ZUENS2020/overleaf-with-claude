@@ -125,24 +125,30 @@ export default {
       return res.status(400).json({ error: 'missing_path' })
     }
     try {
-      const docs = await ProjectEntityHandler.promises.getAllDocs(projectId)
-      const fullPath = '/' + path.replace(/^\/+/, '')
-      const doc = docs[fullPath]
-      if (!doc) {
-        return res.status(404).json({ error: 'file_not_found' })
+      const original = AiAssistantManager.getFileOriginal(
+        userId,
+        projectId,
+        path
+      )
+      if (original == null) {
+        // No snapshot — either the session ended, the file wasn't
+        // touched by Claude, or we already reverted it.
+        return res.status(409).json({ error: 'no_snapshot' })
       }
-      const lines = (doc.lines || []).join('\n')
-      // Revert by re-setting the document content (which is the pre-edit
-      // version from FileSync's lastWritten map).  For simplicity, we
-      // just re-push the current docstore version; the frontend can
-      // issue a revert after seeing a diff.
+      const docs = await ProjectEntityHandler.promises.getAllDocs(projectId)
+      const doc = docs['/' + path.replace(/^\/+/, '')]
+      if (!doc) return res.status(404).json({ error: 'file_not_found' })
+
       await DocumentUpdaterHandler.promises.setDocument(
         projectId,
         doc._id.toString(),
         userId,
-        doc.lines,
+        original.split('\n'),
         'ai-assistant-revert'
       )
+      // Drop the snapshot so the next Claude edit re-captures the
+      // (now-reverted) baseline.
+      AiAssistantManager.clearFileOriginal(userId, projectId, path)
       res.json({ ok: true })
     } catch (err) {
       logger.warn({ err, userId, projectId, path }, 'ai-assistant revert file failed')
@@ -231,6 +237,57 @@ export default {
         return res.status(400).json({ error: err.message })
       }
       logger.warn({ err, userId, sessionId }, 'ai-assistant rename session failed')
+      res.status(500).json({ error: err.message })
+    }
+  },
+
+  async getSessionMessages(req, res) {
+    if (!enabled()) return res.status(503).json({ error: 'disabled' })
+    const userId = requireUser(req, res)
+    if (!userId) return
+    const sessionId = req.params.sessionId
+    const projectId = req.params.Project_id
+    try {
+      const messages = await SessionStore.getMessages(
+        sessionId,
+        userId,
+        projectId
+      )
+      if (messages == null) return res.status(404).json({ error: 'not_found' })
+      res.json({ messages })
+    } catch (err) {
+      if (err.code === 'INVALID_ID') {
+        return res.status(400).json({ error: err.message })
+      }
+      logger.warn({ err, userId, sessionId }, 'ai-assistant get messages failed')
+      res.status(500).json({ error: err.message })
+    }
+  },
+
+  async saveSessionMessages(req, res) {
+    if (!enabled()) return res.status(503).json({ error: 'disabled' })
+    const userId = requireUser(req, res)
+    if (!userId) return
+    const sessionId = req.params.sessionId
+    const projectId = req.params.Project_id
+    const { messages } = req.body || {}
+    if (!Array.isArray(messages)) {
+      return res.status(400).json({ error: 'missing_messages' })
+    }
+    try {
+      const ok = await SessionStore.setMessages(
+        sessionId,
+        userId,
+        projectId,
+        messages
+      )
+      if (!ok) return res.status(404).json({ error: 'not_found' })
+      res.json({ ok: true })
+    } catch (err) {
+      if (err.code === 'INVALID_ID') {
+        return res.status(400).json({ error: err.message })
+      }
+      logger.warn({ err, userId, sessionId }, 'ai-assistant save messages failed')
       res.status(500).json({ error: err.message })
     }
   },

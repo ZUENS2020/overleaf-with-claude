@@ -79,5 +79,15 @@ export default {
       AuthorizationMiddleware.ensureUserCanReadProject,
       AiAssistantController.deleteSession
     )
+    webRouter.get(
+      '/project/:Project_id/ai-assistant/sessions/:sessionId/messages',
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      AiAssistantController.getSessionMessages
+    )
+    webRouter.put(
+      '/project/:Project_id/ai-assistant/sessions/:sessionId/messages',
+      AuthorizationMiddleware.ensureUserCanReadProject,
+      AiAssistantController.saveSessionMessages
+    )
   },
 }

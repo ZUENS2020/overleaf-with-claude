@@ -386,6 +386,27 @@ $cc-error: #cf5454;
   color: var(--content-secondary, #888);
   font-style: italic;
   padding: 2px 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  > span {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+.cc-file-revert {
+  font-size: 11px;
+  font-style: normal;
+  background: transparent;
+  color: $cc-accent;
+  border: 1px solid $cc-accent;
+  border-radius: 4px;
+  padding: 1px 8px;
+  cursor: pointer;
+  flex: 0 0 auto;
+  &:hover { background: $cc-accent-dim; }
 }
 
 // Composer -----------------------------------------------------------

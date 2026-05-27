@@ -75,4 +75,38 @@ export default {
       _id: oid(sessionId, 'session_id'),
     })
   },
+
+  // Persisted chat transcript for a single session. We cap at the
+  // newest MAX_PERSISTED_MESSAGES to keep the Mongo document under the
+  // 16MB BSON limit even if a user has very long conversations with
+  // big tool outputs.
+  async setMessages(sessionId, userId, projectId, messages) {
+    const trimmed = (messages || []).slice(-MAX_PERSISTED_MESSAGES)
+    const r = await db.aiAssistantSessions.updateOne(
+      {
+        _id: oid(sessionId, 'session_id'),
+        userId: oid(userId, 'user_id'),
+        projectId: oid(projectId, 'project_id'),
+      },
+      {
+        $set: { messages: trimmed, updatedAt: new Date() },
+      }
+    )
+    return r.matchedCount > 0
+  },
+
+  async getMessages(sessionId, userId, projectId) {
+    const doc = await db.aiAssistantSessions.findOne(
+      {
+        _id: oid(sessionId, 'session_id'),
+        userId: oid(userId, 'user_id'),
+        projectId: oid(projectId, 'project_id'),
+      },
+      { projection: { messages: 1 } }
+    )
+    if (!doc) return null
+    return doc.messages || []
+  },
 }
+
+const MAX_PERSISTED_MESSAGES = 200
