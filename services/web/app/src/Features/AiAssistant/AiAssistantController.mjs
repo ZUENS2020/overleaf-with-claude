@@ -10,6 +10,7 @@ import AiAssistantManager from './AiAssistantManager.mjs'
 import ProjectEntityHandler from '../Project/ProjectEntityHandler.mjs'
 import SessionStore from './SessionStore.mjs'
 import { User } from '../../models/User.mjs'
+import AiAssistantSettingsController from './AiAssistantSettingsController.mjs'
 
 const ALLOWED_MODELS = new Set(['sonnet', 'opus', 'haiku'])
 
@@ -31,82 +32,8 @@ export default {
     if (!enabled()) return res.status(503).json({ error: 'disabled' })
     const userId = requireUser(req, res)
     if (!userId) return
-    try {
-      const url = await ClaudeAuth.startLogin(userId)
-      res.json({ authorizeUrl: url })
-    } catch (err) {
-      logger.warn({ err, userId }, 'claude auth login start failed')
-      res.status(500).json({ error: 'start_failed', detail: err.message })
-    }
-  },
-
-  async oauthExchange(req, res) {
-    if (!enabled()) return res.status(503).json({ error: 'disabled' })
-    const userId = requireUser(req, res)
-    if (!userId) return
-    const { code } = req.body || {}
-    if (!code || typeof code !== 'string') {
-      return res.status(400).json({ error: 'missing_code' })
-    }
-    try {
-      const tokens = await ClaudeAuth.submitCode(userId, code)
-      await TokenStore.store(userId, tokens)
-      res.json({ ok: true, account: tokens.account || null })
-    } catch (err) {
-      logger.warn({ err, userId }, 'claude auth login submit failed')
-      res.status(400).json({ error: 'exchange_failed', detail: err.message })
-    }
-  },
-
-  async oauthStatus(req, res) {
-    if (!enabled()) return res.json({ enabled: false })
-    const userId = requireUser(req, res)
-    if (!userId) return
-    const tok = await TokenStore.load(userId)
-    res.json({
-      enabled: true,
-      connected: !!tok,
-      account: tok?.account || null,
-    })
-  },
-
-  async oauthDisconnect(req, res) {
-    if (!enabled()) return res.status(503).json({ error: 'disabled' })
-    const userId = requireUser(req, res)
-    if (!userId) return
-    await AiAssistantManager.stopAllForUser(userId)
-    await TokenStore.clear(userId)
-    res.json({ ok: true })
-  },
-
-  async getPreferences(req, res) {
-    const userId = requireUser(req, res)
-    if (!userId) return
-    const user = await User.findById(userId, { 'aiAssistant.preferredModel': 1 }).exec()
-    res.json({
-      preferredModel: user?.aiAssistant?.preferredModel || 'sonnet',
-    })
-  },
-
-  async updatePreferences(req, res) {
-    const userId = requireUser(req, res)
-    if (!userId) return
-    const { preferredModel } = req.body || {}
-    if (!preferredModel || !ALLOWED_MODELS.has(preferredModel)) {
-      return res.status(400).json({ error: 'invalid_model', allowed: [...ALLOWED_MODELS] })
-    }
-    await User.updateOne(
-      { _id: userId },
-      { $set: { 'aiAssistant.preferredModel': preferredModel } }
-    ).exec()
-    res.json({ ok: true, preferredModel })
-  },
-
-  async sendMessage(req, res) {
-    if (!enabled()) return res.status(503).json({ error: 'disabled' })
-    const userId = requireUser(req, res)
-    if (!userId) return
     const projectId = req.params.Project_id
+    await AiAssistantSettingsController.migrateLegacyOAuth(userId).catch(() => {})
     const text = req.body?.text
     const permissionMode = req.body?.permissionMode
     const images = req.body?.images
