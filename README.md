@@ -23,11 +23,15 @@ An open-source online collaborative LaTeX editor with an integrated Claude Code 
 - **Image attachments** — paste or upload images into chat (base64, sent with message)
 - **Multi-session management** — multiple conversations per project, auto-titled from first message, stored in MongoDB with message persistence
 - **Multi-tenant isolation** — per-user Claude credentials, sessions (keyed by `${userId}:${projectId}`), and JWE-encrypted OAuth tokens; read-only collaborators see a block message
-- **Provider system** — OAuth, API key, or custom relay URL as named profiles, one active at a time
+- **Provider system** — OAuth, API key, or custom relay URL as named profiles, one active at a time (backend code exists but not wired into router yet — currently using OAuth-only flow)
 
 ### Overleaf CE Base
 
 All features of Overleaf Community Edition: real-time collaborative editing, PDF preview, Git integration, track changes, project history, and more.
+
+## Authentication
+
+Currently supports OAuth-only Claude login via in-browser PKCE authorization. The provider system (API key, custom relay URL) has backend code written but is not yet routed — see the [Provider Settings](#provider-settings) section below.
 
 ## Quick Start
 
@@ -109,7 +113,7 @@ Browser                            Server (port 8082)
 | `FileSync` | `services/web/app/src/Features/AiAssistant/FileSync.mjs` | Watches CWD via `fs.watch` (not chokidar), debounces, pushes to DocumentUpdater |
 | `SessionStore` | `services/web/app/src/Features/AiAssistant/SessionStore.mjs` | MongoDB CRUD for conversations + message persistence |
 | Frontend panel | `services/web/frontend/js/features/ai-assistant/components/ai-assistant-pane.tsx` | React chat UI with SSE streaming |
-| Frontend settings | `services/web/frontend/js/features/ai-assistant/components/ai-assistant-settings.tsx` | Provider settings panel |
+| Frontend settings | `services/web/frontend/js/features/ai-assistant/components/ai-assistant-settings.tsx` | Provider settings panel (code exists, not wired into UI yet)
 
 ## Configuration Reference
 
@@ -151,6 +155,13 @@ This fork modifies Overleaf Community Edition with the following additions:
 
 All modifications are released under AGPL-3.0. See [NOTICE.md](NOTICE.md) for full attribution.
 
+### Provider Settings (Backend Code Only — Not Routed)
+
+The file `AiAssistantSettingsController.mjs` exists on disk with full CRUD for named
+provider profiles (OAuth, API key, custom relay URL), activation switching, and
+connection status. It is not yet wired into the router or the React frontend.
+Endpoints would be at `/ai-assistant/providers/*` once connected.
+
 ## API Endpoints
 
 ### Authentication (per-user, no project context)
@@ -179,10 +190,6 @@ All modifications are released under AGPL-3.0. See [NOTICE.md](NOTICE.md) for fu
 | DELETE | `/project/:Project_id/ai-assistant/sessions/:sessionId` | Delete conversation |
 | GET | `/project/:Project_id/ai-assistant/sessions/:sessionId/messages` | Get persisted messages |
 | PUT | `/project/:Project_id/ai-assistant/sessions/:sessionId/messages` | Save messages |
-
-### Provider Management
-
-Routes registered by `AiAssistantSettingsController` for the provider settings panel. See `/ai-assistant/providers` endpoints.
 
 ## Known Limitations
 
