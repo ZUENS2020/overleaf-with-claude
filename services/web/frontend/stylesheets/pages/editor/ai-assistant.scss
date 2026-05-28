@@ -624,6 +624,63 @@ $cc-error: #cf5454;
   cursor: pointer;
   &:hover { background: var(--bg-light-secondary, #e0e0e0); }
 }
+.cc-btn-accept[disabled],
+.cc-btn-deny[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+// Plan-mode interactive plan card -------------------------------------
+.cc-plan {
+  border: 1.5px solid #d97706; // amber — distinct from permission red
+  border-radius: 10px;
+  background: var(--bg-light-primary, #fff);
+  margin: 8px 0;
+  overflow: hidden;
+}
+.cc-plan-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--border-divider, #eee);
+  background: #fff7ed; // very pale amber
+}
+.cc-plan-icon { font-size: 14px; }
+.cc-plan-title {
+  font-weight: 600;
+  font-size: 13px;
+  flex: 1;
+}
+.cc-plan-mode {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #d97706;
+  background: #fef3c7;
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+.cc-plan-body {
+  padding: 8px 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.cc-plan-actions {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border-divider, #eee);
+  background: var(--bg-light-secondary, #fafafa);
+}
+.cc-plan-hint {
+  padding: 6px 12px 8px;
+  font-size: 11px;
+  color: var(--content-secondary, #666);
+}
 
 
 // Image attachments in composer ----------------------------------------
@@ -687,6 +744,10 @@ $cc-error: #cf5454;
 }
 
 // Session list sidebar -----------------------------------------------
+// Session list — modelled after the VS Code Claude Code extension:
+// small eyebrow header, prominent "+ New" row, search input, then a
+// flat list with relative time on the right and hover-revealed
+// rename / delete icons.
 .cc-session-list {
   position: absolute;
   top: 0;
@@ -698,69 +759,128 @@ $cc-error: #cf5454;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border-divider, #e5e5e5);
-  overflow-y: auto;
 }
 .cc-session-list-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
-  font-weight: 600;
-  border-bottom: 1px solid var(--border-divider, #e5e5e5);
+  padding: 10px 12px 4px;
 }
-.cc-session-group {
-  padding: 0;
-}
-.cc-session-group-label {
-  padding: 8px 12px 4px;
-  font-size: 11px;
-  font-weight: 600;
+.cc-session-list-eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   color: var(--content-secondary, #888);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+}
+.cc-session-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--content-primary, #1c1c1c);
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--border-divider, #e5e5e5);
+  border-bottom: 1px solid var(--border-divider, #e5e5e5);
+  cursor: pointer;
+  text-align: left;
+  span[aria-hidden] {
+    font-size: 15px;
+    font-weight: 400;
+    color: var(--content-secondary, #666);
+  }
+  &:hover { background: var(--bg-light-tertiary, #f5f5f5); }
+}
+.cc-session-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-divider, #e5e5e5);
+  border-radius: 6px;
+  background: var(--bg-light-primary, #fff);
+  &:focus-within {
+    border-color: $cc-accent;
+  }
+  input {
+    flex: 1;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    font-size: 13px;
+    color: var(--content-primary, #1c1c1c);
+    min-width: 0;
+  }
+}
+.cc-session-search-icon {
+  color: var(--content-secondary, #888);
+  font-size: 13px;
+}
+.cc-session-items {
+  flex: 1;
+  overflow-y: auto;
 }
 .cc-session-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 8px 12px;
   cursor: pointer;
-  gap: 8px;
+  position: relative;
   &:hover {
     background: var(--bg-light-tertiary, #f5f5f5);
   }
 }
 .cc-session-item-active {
-  background: $cc-accent-dim;
-  .cc-session-item-title {
-    color: $cc-accent;
-    font-weight: 600;
-  }
+  background: var(--bg-light-tertiary, #f0f0f0);
+  .cc-session-item-title { font-weight: 600; }
 }
+.cc-session-item-renaming { cursor: default; }
 .cc-session-item-title {
   flex: 1;
+  min-width: 0;
   font-size: 13px;
   color: var(--content-primary, #1c1c1c);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cc-session-item-delete {
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 14px;
-  padding: 2px 4px;
+.cc-session-rename-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  padding: 2px 6px;
+  border: 1px solid $cc-accent;
   border-radius: 4px;
+  outline: 0;
+  background: var(--bg-light-primary, #fff);
+}
+.cc-session-item-time {
+  font-size: 11px;
   color: var(--content-secondary, #888);
-  opacity: 0;
-  transition: opacity 0.15s;
-  &:hover {
-    background: var(--bg-light-tertiary, #eee);
-    color: $cc-error;
-  }
-  .cc-session-item:hover & {
-    opacity: 1;
+  flex-shrink: 0;
+  .cc-session-item:hover & { display: none; }
+}
+.cc-session-item-actions {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  .cc-session-item:hover & { display: inline-flex; }
+  .cc-icon-btn {
+    font-size: 13px;
+    padding: 2px 4px;
+    border-radius: 4px;
+    color: var(--content-secondary, #888);
+    &:hover {
+      background: var(--bg-light-tertiary, #e8e8e8);
+      color: var(--content-primary, #1c1c1c);
+    }
   }
 }
 .cc-session-empty {

@@ -388,62 +388,175 @@ function SessionList({
   activeId,
   onSelect,
   onDelete,
+  onRename,
+  onCreate,
   onClose,
 }: {
   sessions: SessionInfo[]
   activeId: string | null
   onSelect: (id: string) => void
   onDelete: (id: string) => void
+  onRename: (id: string, title: string) => void
+  onCreate: () => void
   onClose: () => void
 }) {
-  const now = Date.now()
-  const today = new Date(now).toDateString()
-  const yesterday = new Date(now - 86400000).toDateString()
-  const groups: { label: string; items: SessionInfo[] }[] = []
-  const buckets = new Map<string, SessionInfo[]>()
-  for (const s of sessions) {
-    const d = new Date(s.updatedAt).toDateString()
-    if (!buckets.has(d)) buckets.set(d, [])
-    buckets.get(d)!.push(s)
+  const [query, setQuery] = useState('')
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [draftTitle, setDraftTitle] = useState('')
+  const renameInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (renamingId) renameInputRef.current?.select()
+  }, [renamingId])
+
+  // Newest first; search is a case-insensitive substring match on title.
+  const filtered = sessions
+    .slice()
+    .sort((a, b) => +new Date(b.updatedAt) - +new Date(a.updatedAt))
+    .filter(s =>
+      query.trim() === ''
+        ? true
+        : s.title.toLowerCase().includes(query.trim().toLowerCase())
+    )
+
+  const commitRename = (id: string) => {
+    const t = draftTitle.trim()
+    if (t.length > 0) onRename(id, t)
+    setRenamingId(null)
   }
-  for (const [d, items] of buckets) {
-    const label =
-      d === today ? 'Today' : d === yesterday ? 'Yesterday' : d
-    groups.push({ label, items })
-  }
+
   return (
     <div className="cc-session-list">
       <div className="cc-session-list-header">
-        <span>Conversations</span>
-        <button type="button" className="cc-icon-btn" onClick={onClose}>✕</button>
+        <span className="cc-session-list-eyebrow">CLAUDE CODE</span>
+        <button
+          type="button"
+          className="cc-icon-btn"
+          onClick={onClose}
+          aria-label="Close"
+        >
+          ✕
+        </button>
       </div>
-      {groups.map(g => (
-        <div key={g.label} className="cc-session-group">
-          <div className="cc-session-group-label">{g.label}</div>
-          {g.items.map(s => (
+      <button
+        type="button"
+        className="cc-session-new"
+        onClick={onCreate}
+      >
+        <span aria-hidden>+</span> New conversation
+      </button>
+      <div className="cc-session-search">
+        <span className="cc-session-search-icon" aria-hidden>
+          ⌕
+        </span>
+        <input
+          type="text"
+          placeholder="Search conversations…"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          aria-label="Search conversations"
+        />
+      </div>
+      <div className="cc-session-items">
+        {filtered.map(s => {
+          const isActive = s.id === activeId
+          const isRenaming = renamingId === s.id
+          return (
             <div
               key={s.id}
-              className={`cc-session-item ${s.id === activeId ? 'cc-session-item-active' : ''}`}
-              onClick={() => onSelect(s.id)}
+              className={
+                'cc-session-item' +
+                (isActive ? ' cc-session-item-active' : '') +
+                (isRenaming ? ' cc-session-item-renaming' : '')
+              }
+              onClick={() => {
+                if (!isRenaming) onSelect(s.id)
+              }}
             >
-              <span className="cc-session-item-title">{s.title}</span>
-              <button
-                type="button"
-                className="cc-session-item-delete"
-                onClick={e => { e.stopPropagation(); onDelete(s.id) }}
-                title="Delete"
-              >
-                🗑
-              </button>
+              {isRenaming ? (
+                <input
+                  ref={renameInputRef}
+                  className="cc-session-rename-input"
+                  value={draftTitle}
+                  onChange={e => setDraftTitle(e.target.value)}
+                  onClick={e => e.stopPropagation()}
+                  onKeyDown={e => {
+                    if (e.nativeEvent.isComposing) return
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      commitRename(s.id)
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault()
+                      setRenamingId(null)
+                    }
+                  }}
+                  onBlur={() => commitRename(s.id)}
+                />
+              ) : (
+                <span
+                  className="cc-session-item-title"
+                  title={s.title}
+                >
+                  {s.title || 'Untitled'}
+                </span>
+              )}
+              <span className="cc-session-item-time">
+                {formatRelativeTime(s.updatedAt)}
+              </span>
+              <span className="cc-session-item-actions">
+                <button
+                  type="button"
+                  className="cc-icon-btn"
+                  title="Rename"
+                  aria-label="Rename"
+                  onClick={e => {
+                    e.stopPropagation()
+                    setDraftTitle(s.title || '')
+                    setRenamingId(s.id)
+                  }}
+                >
+                  ✎
+                </button>
+                <button
+                  type="button"
+                  className="cc-icon-btn"
+                  title="Delete"
+                  aria-label="Delete"
+                  onClick={e => {
+                    e.stopPropagation()
+                    onDelete(s.id)
+                  }}
+                >
+                  🗑
+                </button>
+              </span>
             </div>
-          ))}
-        </div>
-      ))}
-      {sessions.length === 0 && (
-        <div className="cc-session-empty">No conversations yet</div>
-      )}
+          )
+        })}
+        {filtered.length === 0 && (
+          <div className="cc-session-empty">
+            {sessions.length === 0
+              ? 'No conversations yet'
+              : 'No matches'}
+          </div>
+        )}
+      </div>
     </div>
   )
+}
+
+// Short relative-time label for session-list timestamps, matching
+// what the VS Code extension uses ("just now", "5m", "3h", "5d",
+// then full dates for anything older than 30 days).
+function formatRelativeTime(iso: string): string {
+  const t = +new Date(iso)
+  if (isNaN(t)) return ''
+  const diff = Date.now() - t
+  if (diff < 60_000) return 'just now'
+  if (diff < 3_600_000) return Math.floor(diff / 60_000) + 'm'
+  if (diff < 86_400_000) return Math.floor(diff / 3_600_000) + 'h'
+  if (diff < 30 * 86_400_000) return Math.floor(diff / 86_400_000) + 'd'
+  return new Date(t).toLocaleDateString()
 }
 
 function Chat({
@@ -628,10 +741,16 @@ function Chat({
   )
 
   const send = useCallback(
-    async (overrideText?: string) => {
-      const text = (overrideText ?? input).trim()
+    async (opts?: { text?: string; modeOverride?: PermissionMode }) => {
+      const text = (opts?.text ?? input).trim()
       if (!text && images.length === 0) return
-      setInput('')
+      const effectiveMode = opts?.modeOverride ?? mode
+      // Reflect a one-shot mode override in the composer UI too, so the
+      // mode pills don't lie about what's actually in flight.
+      if (opts?.modeOverride && opts.modeOverride !== mode) {
+        setMode(opts.modeOverride)
+      }
+      if (opts?.text === undefined) setInput('')
       const sentImages = [...images]
       setImages([])
       setError(null)
@@ -641,7 +760,7 @@ function Chat({
       ])
       setState('running')
       try {
-        const body: any = { text, permissionMode: mode }
+        const body: any = { text, permissionMode: effectiveMode }
         if (sentImages.length > 0) {
           body.images = sentImages.map(img => ({
             mediaType: img.file?.type || 'image/png',
@@ -673,6 +792,31 @@ function Chat({
     },
     [input, projectId, mode, images, sessionId, messages.length, loadSessions]
   )
+
+  // Plan-mode interactions: when Claude emits ExitPlanMode (which the
+  // PlanCard renders inline), the user can approve it (switch to
+  // bypass + restart proc + tell Claude to implement) or request
+  // changes (drop a templated revision prompt into the composer).
+  const approvePlan = useCallback(
+    (planText: string) => {
+      send({
+        text:
+          'I approve this plan. Please implement it now.\n\n' +
+          '--- Plan ---\n' +
+          planText,
+        modeOverride: 'bypassPermissions',
+      })
+    },
+    [send]
+  )
+  const modifyPlan = useCallback((planText: string) => {
+    setInput(
+      'Please revise the plan. Current proposal:\n\n' +
+        planText +
+        '\n\nChanges I want: '
+    )
+    composerRef.current?.focus()
+  }, [])
 
   const stop = useCallback(async () => {
     try {
@@ -774,6 +918,19 @@ function Chat({
               loadSessions()
             } catch {}
           }}
+          onRename={async (id, title) => {
+            try {
+              await postJSON(
+                `/project/${projectId}/ai-assistant/sessions/${id}/rename`,
+                { body: { title } }
+              )
+              loadSessions()
+            } catch {}
+          }}
+          onCreate={async () => {
+            await newConversation()
+            setShowSessions(false)
+          }}
           onClose={() => setShowSessions(false)}
         />
       )}
@@ -803,6 +960,8 @@ function Chat({
             key={m.id}
             m={m}
             onPermissionResponse={respondPermission}
+            onPlanApprove={approvePlan}
+            onPlanModify={modifyPlan}
           />
         ))}
       </div>
@@ -844,9 +1003,13 @@ function Chat({
 function MessageNode({
   m,
   onPermissionResponse,
+  onPlanApprove,
+  onPlanModify,
 }: {
   m: Message
   onPermissionResponse: (id: string, allow: boolean) => void
+  onPlanApprove: (plan: string) => void
+  onPlanModify: (plan: string) => void
 }) {
   if (m.kind === 'turn-divider') return <div className="cc-turn-divider" />
   if (m.kind === 'user') {
@@ -885,7 +1048,25 @@ function MessageNode({
       </details>
     )
   }
-  if (m.kind === 'tool-use') return <ToolUseCard m={m} />
+  if (m.kind === 'tool-use') {
+    // Plan-mode produces a single ExitPlanMode tool call carrying the
+    // full plan as markdown. Render it as an interactive card with
+    // approve / modify actions instead of a raw JSON dump.
+    if (m.name === 'ExitPlanMode') {
+      const plan =
+        typeof m.input?.plan === 'string'
+          ? m.input.plan
+          : JSON.stringify(m.input, null, 2)
+      return (
+        <PlanCard
+          plan={plan}
+          onApprove={() => onPlanApprove(plan)}
+          onModify={() => onPlanModify(plan)}
+        />
+      )
+    }
+    return <ToolUseCard m={m} />
+  }
   if (m.kind === 'permission-request') {
     return (
       <PermissionCard
@@ -973,6 +1154,64 @@ function PermissionCard({
           Deny
         </button>
       </div>
+    </div>
+  )
+}
+
+function PlanCard({
+  plan,
+  onApprove,
+  onModify,
+}: {
+  plan: string
+  onApprove: () => void
+  onModify: () => void
+}) {
+  // Once the user acts on a plan we lock the buttons so they can't
+  // accidentally re-fire approval / modify on the same card.
+  const [acted, setActed] = useState<'approve' | 'modify' | null>(null)
+  return (
+    <div className="cc-plan">
+      <div className="cc-plan-header">
+        <span className="cc-plan-icon" aria-hidden>
+          📋
+        </span>
+        <span className="cc-plan-title">Proposed plan</span>
+        <span className="cc-plan-mode">plan mode</span>
+      </div>
+      <div
+        className="cc-plan-body cc-markdown"
+        dangerouslySetInnerHTML={{ __html: renderMarkdown(plan) }}
+      />
+      <div className="cc-plan-actions">
+        <button
+          type="button"
+          className="cc-btn cc-btn-accept"
+          disabled={acted !== null}
+          onClick={() => {
+            setActed('approve')
+            onApprove()
+          }}
+        >
+          {acted === 'approve' ? 'Approving…' : 'Approve & implement'}
+        </button>
+        <button
+          type="button"
+          className="cc-btn cc-btn-deny"
+          disabled={acted !== null}
+          onClick={() => {
+            setActed('modify')
+            onModify()
+          }}
+        >
+          Request changes
+        </button>
+      </div>
+      {acted === 'modify' && (
+        <div className="cc-plan-hint">
+          Edit the prompt below to describe the changes you want, then send.
+        </div>
+      )}
     </div>
   )
 }

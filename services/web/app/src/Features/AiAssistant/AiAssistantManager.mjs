@@ -364,6 +364,25 @@ class Session {
   }
 
   async send(text, opts = {}) {
+    // Permission mode is baked into the CLI at spawn time, so switching
+    // (plan <-> bypassPermissions) mid-conversation requires a fresh
+    // proc. The Session is stable, so subscribers/history survive the
+    // restart and the UI just sees a status:stopped → starting cycle.
+    const requestedMode = ALLOWED_MODES.has(opts.permissionMode)
+      ? opts.permissionMode
+      : 'bypassPermissions'
+    if (this.proc && this.permissionMode !== requestedMode) {
+      logger.info(
+        {
+          userId: this.userId,
+          projectId: this.projectId,
+          from: this.permissionMode,
+          to: requestedMode,
+        },
+        'ai-assistant: permission mode change, restarting proc'
+      )
+      await this.stop()
+    }
     if (!this.proc) await this.start(opts)
     this.lastActivity = Date.now()
     this.resetIdleTimer()
