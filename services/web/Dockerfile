@@ -72,7 +72,7 @@ FROM deps AS dev
 # Install the claude CLI globally so AiAssistantManager can spawn it.
 # Pinned via package.json in the install command line for reproducibility.
 USER root
-RUN npm install -g @anthropic-ai/claude-code@latest \
+RUN npm install -g @anthropic-ai/claude-code@latest @anthropic-ai/claude-agent-sdk@latest \
     && chown -R node:node /usr/local/lib/node_modules/@anthropic-ai
 USER node
 
