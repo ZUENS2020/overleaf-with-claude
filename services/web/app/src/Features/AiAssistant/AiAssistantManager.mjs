@@ -24,7 +24,7 @@
 // this module just owns conversation/process lifecycle and event fan-out.
 
 import { spawn } from 'node:child_process'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import logger from '@overleaf/logger'
@@ -34,6 +34,7 @@ import * as ClaudeAuth from './ClaudeAuth.mjs'
 import ProjectEntityHandler from '../Project/ProjectEntityHandler.mjs'
 import FileSync from './FileSync.mjs'
 import { User } from '../../models/User.mjs'
+import { createPatch } from 'diff'
 
 const ROOT = join(tmpdir(), 'overleaf-ai-assistant')
 const ALLOWED_MODES = new Set(['plan', 'bypassPermissions'])
@@ -48,6 +49,12 @@ function key(userId, projectId) {
 }
 
 const DEFAULT_MODEL = 'sonnet'
+
+// Bound the per-message editor-activity prefix we send to Claude so a
+// huge paste doesn't blow up the prompt. Anything over the per-file cap
+// is replaced with a short "re-read with Read tool" note.
+const MAX_DIFF_BYTES_PER_FILE = 8 * 1024
+const MAX_DIFF_BYTES_TOTAL = 32 * 1024
 
 async function resolvePreferredModel(userId) {
   try {
@@ -73,6 +80,15 @@ class Session {
     this.idleTimer = null
     this.fileSync = null
     this.history = [] // recent events for late subscribers
+    // baseline[relPath] = "the content Claude last saw / wrote for this
+    // file". Initialized in hydrateCwd, updated on forward-sync writes
+    // and after a diff has been delivered to Claude via send().
+    this.baseline = new Map()
+    // Paths the editor (or another non-AI client) has rewritten since
+    // Claude's last interaction. The next send() will diff baseline ->
+    // disk for each and prepend a git-style patch to the user's
+    // message, then move those paths into baseline.
+    this.pendingExternalEdits = new Set()
   }
 
   emit(event, data) {
@@ -116,11 +132,19 @@ class Session {
 
     // Copy project docs in. Binary file assets (filestore) are out of
     // scope for the first cut — Claude operates on .tex/.bib/etc only.
+    // The hydrated content is also the diff baseline: the fresh proc
+    // starts knowing exactly what's on disk, so subsequent reverse
+    // syncs produce meaningful diffs against this snapshot.
+    this.baseline.clear()
+    this.pendingExternalEdits.clear()
     const docs = await ProjectEntityHandler.promises.getAllDocs(this.projectId)
-    for (const [relPath, doc] of Object.entries(docs)) {
-      const fullPath = join(this.cwd, relPath.replace(/^\//, ''))
+    for (const [absPath, doc] of Object.entries(docs)) {
+      const relPath = absPath.replace(/^\/+/, '')
+      const content = (doc.lines || []).join('\n')
+      const fullPath = join(this.cwd, relPath)
       await mkdir(join(fullPath, '..'), { recursive: true })
-      await writeFile(fullPath, (doc.lines || []).join('\n'))
+      await writeFile(fullPath, content)
+      this.baseline.set(relPath, content)
     }
   }
 
@@ -197,15 +221,28 @@ class Session {
         logger.debug({ stderr: s.slice(0, 500) }, 'claude stderr')
       })
 
-      // File watcher → DocumentUpdater. Emits a small file-changed
-      // notice to the chat so the user sees which files Claude
-      // touched in this turn.
+      // File sync: forward (claude -> editor) and reverse (editor ->
+      // claude). Both directions emit `file-changed` so the UI can
+      // show the path. Reverse also seeds pendingExternalEdits so the
+      // next send() prepends a git-style diff for Claude to read.
       try {
         this.fileSync = await FileSync.start({
           userId: this.userId,
           projectId: this.projectId,
           cwd: this.cwd,
-          onFileChanged: path => this.emit('file-changed', { path }),
+          onForwardChange: (path, content) => {
+            this.emit('file-changed', { path })
+            // Claude wrote this content; treat it as already known.
+            this.baseline.set(path, content)
+            this.pendingExternalEdits.delete(path)
+          },
+          onReverseChange: (path /* , content */) => {
+            this.emit('file-changed', { path })
+            // Defer diff computation until send() — there may be more
+            // edits queued, and we want to diff against the disk
+            // state at send time.
+            this.pendingExternalEdits.add(path)
+          },
         })
       } catch (err) {
         logger.warn({ err }, 'file sync start failed; continuing without it')
@@ -277,7 +314,13 @@ class Session {
     if (!this.proc) await this.start(opts)
     this.lastActivity = Date.now()
     this.resetIdleTimer()
-    const content = [{ type: 'text', text }]
+    // Prepend a git-style summary of editor edits Claude hasn't seen
+    // yet. This is what `pendingExternalEdits` is for: reverse-sync
+    // queues paths, send() turns the queue into a single, bounded
+    // notice and advances the baseline.
+    const editorPrefix = await this.consumeExternalEditPrefix()
+    const finalText = editorPrefix ? editorPrefix + '\n\n' + text : text
+    const content = [{ type: 'text', text: finalText }]
     // Attach images if provided (base64-encoded)
     if (Array.isArray(opts.images) && opts.images.length > 0) {
       for (const img of opts.images) {
@@ -299,7 +342,75 @@ class Session {
       },
     }
     this.proc.stdin.write(JSON.stringify(msg) + '\n')
+    // The user sees only their own text in the transcript; the diff
+    // prefix is an under-the-hood context injection.
     this.emit('user-message', { text })
+  }
+
+  // Drain pendingExternalEdits into a git-style unified-diff prefix
+  // and advance baseline so the next call starts fresh. Returns null
+  // if there's nothing to report.
+  async consumeExternalEditPrefix() {
+    if (this.pendingExternalEdits.size === 0) return null
+    const paths = [...this.pendingExternalEdits].sort()
+    this.pendingExternalEdits.clear()
+
+    const blocks = []
+    let totalBytes = 0
+    let truncated = false
+    for (const relPath of paths) {
+      let after
+      try {
+        after = await readFile(join(this.cwd, relPath), 'utf8')
+      } catch {
+        continue // file vanished; skip
+      }
+      const before = this.baseline.get(relPath) ?? ''
+      if (before === after) {
+        // Reverse sync queued it, but a forward sync (or another
+        // reverse pull) brought baseline back in line. Nothing to
+        // tell Claude.
+        this.baseline.set(relPath, after)
+        continue
+      }
+      let body
+      const patch = createPatch(relPath, before, after, '', '', { context: 3 })
+      // Strip jsdiff's two-line file header ("Index:" + "===") — we
+      // already label the block ourselves and the unified ---/+++
+      // lines below it are what Claude actually wants.
+      const trimmed = patch.replace(/^Index:.*\n=+\n/, '')
+      if (trimmed.length > MAX_DIFF_BYTES_PER_FILE) {
+        const beforeLines = before ? before.split('\n').length : 0
+        const afterLines = after.split('\n').length
+        body =
+          `(diff omitted — patch is ${(trimmed.length / 1024).toFixed(1)} KB; ` +
+          `file went from ${beforeLines} to ${afterLines} lines. ` +
+          `Use the Read tool on ${relPath} to inspect the current content.)`
+      } else if (totalBytes + trimmed.length > MAX_DIFF_BYTES_TOTAL) {
+        body =
+          `(diff omitted — total prefix would exceed budget. ` +
+          `Use the Read tool on ${relPath} to inspect.)`
+        truncated = true
+      } else {
+        body = '```diff\n' + trimmed.trimEnd() + '\n```'
+        totalBytes += trimmed.length
+      }
+      blocks.push(`### ${relPath}\n${body}`)
+      // Whether or not we sent the patch, Claude is now considered to
+      // have a fresh view of this file (it has the path and can read
+      // it on demand).
+      this.baseline.set(relPath, after)
+    }
+
+    if (blocks.length === 0) return null
+    const header =
+      '[Overleaf editor activity since your last message — files have ' +
+      'already been updated on disk:]'
+    const footer = truncated
+      ? '\n\n(Some diffs were dropped to keep this prefix small; ' +
+        'use Read on those paths if you need details.)'
+      : ''
+    return header + '\n\n' + blocks.join('\n\n') + footer
   }
 
   // Provisional / untested. The claude CLI in `--print` non-interactive

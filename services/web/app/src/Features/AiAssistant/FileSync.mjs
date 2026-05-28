@@ -38,7 +38,18 @@ const SSE_RECONNECT_MS = 5000
 const OWN_SOURCE = 'ai-assistant'
 
 export default {
-  async start({ userId, projectId, cwd, onFileChanged }) {
+  // Callbacks:
+  //   onForwardChange(relPath, content)  -- Claude wrote a file, now in docstore
+  //   onReverseChange(relPath, content)  -- editor (or another client) wrote;
+  //                                          content is what's now on disk
+  // Both fire after the corresponding write succeeds.
+  async start({
+    userId,
+    projectId,
+    cwd,
+    onForwardChange,
+    onReverseChange,
+  }) {
     const pending = new Map() // relPath -> timer (forward)
     const reversePending = new Map() // docId -> timer (reverse)
     const lastWritten = new Map() // relPath -> content; shared loop guard
@@ -97,7 +108,7 @@ export default {
           lines,
           OWN_SOURCE
         )
-        onFileChanged?.(relPath)
+        onForwardChange?.(relPath, buf)
       } catch (err) {
         if (err.code === 'ENOENT') return
         logger.warn({ err, relPath }, 'ai-assistant file flush failed')
@@ -153,7 +164,7 @@ export default {
         const full = join(cwd, relPath)
         await mkdir(dirname(full), { recursive: true })
         await writeFile(full, content, 'utf8')
-        onFileChanged?.(relPath)
+        onReverseChange?.(relPath, content)
       } catch (err) {
         logger.warn(
           { err, projectId, docId, relPath },
