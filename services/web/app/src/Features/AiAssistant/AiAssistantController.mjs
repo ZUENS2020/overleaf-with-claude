@@ -127,12 +127,18 @@ export default {
     const userId = requireUser(req, res)
     if (!userId) return
     const projectId = req.params.Project_id
-    const { id, allow } = req.body || {}
+    const { id, allow, message } = req.body || {}
     if (!id || typeof allow !== 'boolean') {
       return res.status(400).json({ error: 'missing_id_or_allow' })
     }
     try {
-      AiAssistantManager.respondPermission(userId, projectId, id, allow)
+      await AiAssistantManager.respondPermission(
+        userId,
+        projectId,
+        id,
+        allow,
+        typeof message === 'string' ? message : undefined
+      )
       res.json({ ok: true })
     } catch (err) {
       logger.warn({ err, userId, projectId }, 'ai-assistant permission response failed')

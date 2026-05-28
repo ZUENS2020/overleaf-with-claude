@@ -70,16 +70,6 @@ type Message =
   | { kind: 'thinking'; text: string; id: string }
   | ToolUse
   | PermissionReq
-  | {
-      kind: 'plan'
-      id: string
-      plan: string
-      // 'tool'     — Claude correctly called ExitPlanMode.
-      // 'fallback' — Claude finished plan-mode turn without calling
-      //              ExitPlanMode; we salvaged the plan from a
-      //              blocked Write or the final assistant text.
-      source: 'tool' | 'fallback'
-    }
   | { kind: 'todos'; id: string; todos: Todo[] }
   | { kind: 'file-changed'; path: string; id: string }
   | { kind: 'error'; message: string; id: string }
@@ -87,54 +77,6 @@ type Message =
 
 function newId() {
   return Math.random().toString(36).slice(2)
-}
-
-// Where did this conversational turn begin? Used by the plan-mode
-// salvage path on turn-end to scope inspection to the current turn.
-function findTurnStartIdx(msgs: Message[]): number {
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i].kind === 'turn-divider') return i + 1
-    if (msgs[i].kind === 'user') return i // include the user message
-  }
-  return 0
-}
-
-// In plan mode Claude is supposed to call ExitPlanMode with the
-// plan markdown. If the model misbehaves — writes a PLAN.md file
-// (which the CLI blocks) or just narrates the plan in text — we
-// still want the user to be able to Approve. Pull the most useful
-// candidate out of the turn:
-//   1. Largest Write/Edit/NotebookEdit input.content (Claude
-//      attempted to write a plan-as-file).
-//   2. Concatenated assistant text (Claude narrated the plan).
-// Returns null if neither yields something plausibly plan-shaped.
-function extractFallbackPlan(turn: Message[]): string | null {
-  let bestWriteContent: string | null = null
-  let textParts: string[] = []
-  for (const m of turn) {
-    if (m.kind === 'tool-use') {
-      const name = m.name
-      if (name === 'Write' || name === 'Edit' || name === 'NotebookEdit') {
-        const c =
-          typeof m.input?.content === 'string'
-            ? m.input.content
-            : typeof m.input?.new_string === 'string'
-              ? m.input.new_string
-              : null
-        if (c && (!bestWriteContent || c.length > bestWriteContent.length)) {
-          bestWriteContent = c
-        }
-      }
-    } else if (m.kind === 'assistant') {
-      if (m.text && m.text.trim().length > 0) textParts.push(m.text)
-    }
-  }
-  if (bestWriteContent && bestWriteContent.trim().length >= 40) {
-    return bestWriteContent
-  }
-  const joined = textParts.join('\n\n').trim()
-  if (joined.length >= 40) return joined
-  return null
 }
 
 const MODE_OPTIONS: { value: PermissionMode; label: string }[] = [
@@ -649,16 +591,12 @@ function Chat({
   // the latest state without re-subscribing every render.
   const sessionIdRef = useRef<string | null>(null)
   const messagesRef = useRef<Message[]>([])
-  const modeRef = useRef<PermissionMode>(mode)
   useEffect(() => {
     sessionIdRef.current = sessionId
   }, [sessionId])
   useEffect(() => {
     messagesRef.current = messages
   }, [messages])
-  useEffect(() => {
-    modeRef.current = mode
-  }, [mode])
 
   // Persist the current conversation to its session row. Strips the
   // non-serializable `file: File` field from image attachments — we
@@ -728,13 +666,6 @@ function Chat({
     })
     es.addEventListener('tool-use', (ev: MessageEvent) => {
       const d = JSON.parse(ev.data)
-      // ExitPlanMode is the well-behaved plan-mode endpoint: lift it
-      // out of the generic tool stream and render as an interactive
-      // PlanCard via the 'plan' message kind.
-      if (d.name === 'ExitPlanMode' && typeof d.input?.plan === 'string') {
-        append({ kind: 'plan', id: d.id, plan: d.input.plan, source: 'tool' })
-        return
-      }
       append({ kind: 'tool-use', id: d.id, name: d.name, input: d.input })
     })
     es.addEventListener('tool-result', (ev: MessageEvent) => {
@@ -772,34 +703,19 @@ function Chat({
         description: d.description,
       })
     })
+    es.addEventListener('permission-mode', (ev: MessageEvent) => {
+      // Backend flipped permissionMode on the live query (e.g. after
+      // approving an ExitPlanMode). Keep the pill in sync.
+      try {
+        const d = JSON.parse(ev.data)
+        if (d.mode === 'plan' || d.mode === 'bypassPermissions') {
+          setMode(d.mode)
+        }
+      } catch {}
+    })
     es.addEventListener('turn-end', () => {
       setState('idle')
-      setMessages(curr => {
-        const next: Message[] = [...curr]
-        // Plan-mode salvage: if Claude finished a plan-mode turn
-        // without calling ExitPlanMode (it tried Write/Edit instead,
-        // or just narrated the plan in text), pull the plan out of
-        // whatever signal we have so the user can still Approve /
-        // Request changes instead of being stuck.
-        if (modeRef.current === 'plan') {
-          const turnStart = findTurnStartIdx(next)
-          const turnSlice = next.slice(turnStart)
-          const alreadyHasPlan = turnSlice.some(m => m.kind === 'plan')
-          if (!alreadyHasPlan) {
-            const salvaged = extractFallbackPlan(turnSlice)
-            if (salvaged) {
-              next.push({
-                kind: 'plan',
-                id: newId(),
-                plan: salvaged,
-                source: 'fallback',
-              })
-            }
-          }
-        }
-        next.push({ kind: 'turn-divider', id: newId() })
-        return next
-      })
+      append({ kind: 'turn-divider', id: newId() })
       // Persist the conversation when each turn completes; the next
       // tick lets the divider append before we snapshot.
       setTimeout(() => persistMessages(), 0)
@@ -835,16 +751,10 @@ function Chat({
   )
 
   const send = useCallback(
-    async (opts?: { text?: string; modeOverride?: PermissionMode }) => {
-      const text = (opts?.text ?? input).trim()
+    async () => {
+      const text = input.trim()
       if (!text && images.length === 0) return
-      const effectiveMode = opts?.modeOverride ?? mode
-      // Reflect a one-shot mode override in the composer UI too, so the
-      // mode pills don't lie about what's actually in flight.
-      if (opts?.modeOverride && opts.modeOverride !== mode) {
-        setMode(opts.modeOverride)
-      }
-      if (opts?.text === undefined) setInput('')
+      setInput('')
       const sentImages = [...images]
       setImages([])
       setError(null)
@@ -854,7 +764,7 @@ function Chat({
       ])
       setState('running')
       try {
-        const body: any = { text, permissionMode: effectiveMode }
+        const body: any = { text, permissionMode: mode }
         if (sentImages.length > 0) {
           body.images = sentImages.map(img => ({
             mediaType: img.file?.type || 'image/png',
@@ -887,30 +797,31 @@ function Chat({
     [input, projectId, mode, images, sessionId, messages.length, loadSessions]
   )
 
-  // Plan-mode interactions: when Claude emits ExitPlanMode (which the
-  // PlanCard renders inline), the user can approve it (switch to
-  // bypass + restart proc + tell Claude to implement) or request
-  // changes (drop a templated revision prompt into the composer).
+  // Plan-mode interactions. ExitPlanMode is delivered as a
+  // permission-request (the SDK pauses the agent on canUseTool); the
+  // PlanCard wraps that request and surfaces Approve / Request-
+  // changes. Both responses route through the same /permission-
+  // response endpoint as any other tool permission. The backend
+  // resolves the SDK's awaiting callback and — on approval — also
+  // flips the live query to bypassPermissions so Claude can continue
+  // the same turn writing files.
   const approvePlan = useCallback(
-    (planText: string) => {
-      send({
-        text:
-          'I approve this plan. Please implement it now.\n\n' +
-          '--- Plan ---\n' +
-          planText,
-        modeOverride: 'bypassPermissions',
-      })
+    (id: string) => {
+      // Mode pill flips reactively via the 'permission-mode' SSE
+      // event the backend emits after setPermissionMode, so we don't
+      // call setMode here.
+      respondPermission(id, true)
     },
-    [send]
+    [respondPermission]
   )
-  const modifyPlan = useCallback((planText: string) => {
-    setInput(
-      'Please revise the plan. Current proposal:\n\n' +
-        planText +
-        '\n\nChanges I want: '
-    )
-    composerRef.current?.focus()
-  }, [])
+  const modifyPlan = useCallback(
+    (id: string) => {
+      respondPermission(id, false)
+      setInput('Changes I want to the plan: ')
+      composerRef.current?.focus()
+    },
+    [respondPermission]
+  )
 
   const stop = useCallback(async () => {
     try {
@@ -1102,8 +1013,8 @@ function MessageNode({
 }: {
   m: Message
   onPermissionResponse: (id: string, allow: boolean) => void
-  onPlanApprove: (plan: string) => void
-  onPlanModify: (plan: string) => void
+  onPlanApprove: (permissionRequestId: string) => void
+  onPlanModify: (permissionRequestId: string) => void
 }) {
   if (m.kind === 'turn-divider') return <div className="cc-turn-divider" />
   if (m.kind === 'user') {
@@ -1143,17 +1054,24 @@ function MessageNode({
     )
   }
   if (m.kind === 'tool-use') return <ToolUseCard m={m} />
-  if (m.kind === 'plan') {
-    return (
-      <PlanCard
-        plan={m.plan}
-        source={m.source}
-        onApprove={() => onPlanApprove(m.plan)}
-        onModify={() => onPlanModify(m.plan)}
-      />
-    )
-  }
   if (m.kind === 'permission-request') {
+    // ExitPlanMode is delivered as a permission-request (the SDK
+    // pauses on canUseTool); render the proposed plan markdown
+    // with Approve / Request-changes buttons instead of the
+    // generic Allow / Deny card.
+    if (m.tool === 'ExitPlanMode') {
+      const plan =
+        typeof m.input?.plan === 'string'
+          ? m.input.plan
+          : JSON.stringify(m.input, null, 2)
+      return (
+        <PlanCard
+          plan={plan}
+          onApprove={() => onPlanApprove(m.id)}
+          onModify={() => onPlanModify(m.id)}
+        />
+      )
+    }
     return (
       <PermissionCard
         id={m.id}
@@ -1246,12 +1164,10 @@ function PermissionCard({
 
 function PlanCard({
   plan,
-  source,
   onApprove,
   onModify,
 }: {
   plan: string
-  source: 'tool' | 'fallback'
   onApprove: () => void
   onModify: () => void
 }) {
@@ -1259,22 +1175,14 @@ function PlanCard({
   // accidentally re-fire approval / modify on the same card.
   const [acted, setActed] = useState<'approve' | 'modify' | null>(null)
   return (
-    <div className={'cc-plan' + (source === 'fallback' ? ' cc-plan-fallback' : '')}>
+    <div className="cc-plan">
       <div className="cc-plan-header">
         <span className="cc-plan-icon" aria-hidden>
           📋
         </span>
-        <span className="cc-plan-title">
-          {source === 'fallback' ? 'Plan (recovered)' : 'Proposed plan'}
-        </span>
+        <span className="cc-plan-title">Proposed plan</span>
         <span className="cc-plan-mode">plan mode</span>
       </div>
-      {source === 'fallback' && (
-        <div className="cc-plan-note">
-          Claude didn't call <code>ExitPlanMode</code>, so this plan was
-          salvaged from its reply. Review carefully before approving.
-        </div>
-      )}
       <div
         className="cc-plan-body cc-markdown"
         dangerouslySetInnerHTML={{ __html: renderMarkdown(plan) }}

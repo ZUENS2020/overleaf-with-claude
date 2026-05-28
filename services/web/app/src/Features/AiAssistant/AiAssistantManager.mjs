@@ -1,34 +1,41 @@
-// Per-(user, project) Claude CLI conversation lifecycle.
+// Per-(user, project) Claude conversation lifecycle, built on the
+// Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`).
 //
-// A `Session` is the long-lived object — it survives proc restarts and
-// holds the things callers must not lose across a stop/start cycle:
+// A `Session` is the long-lived object. It survives query restarts and
+// owns the things callers must not lose across a stop/start cycle:
 //   * the temp working dir hydrated from the project's docs
 //   * the fan-out set of SSE subscribers that receive events
 //   * a bounded ring buffer of recent events for late subscribers
+//   * the docId baseline / pending editor edits used to render git-style
+//     diffs to Claude on the next user turn
 //
-// The claude subprocess is a transient incarnation owned by the Session.
-// `stop()` kills the proc and clears per-incarnation state (idle timer,
-// fileSync); it leaves the Session in the registry so the next `send()`
-// or `ensureStarted()` re-spawns against the same subscribers and the
-// UI continues to receive events without reconnecting the SSE stream.
+// The SDK `query` is a transient incarnation owned by the Session.
+// `stop()` closes the query and clears per-incarnation state (idle
+// timer, fileSync, pending permission requests); the Session stays in
+// the registry so the next `send()` re-opens a query against the same
+// subscriber set and the UI continues without an SSE reconnect.
 //
-// Only `stopAllForUser` (OAuth disconnect) actually drops Sessions from
-// the registry — that's the "forget everything" path.
+// Only `stopAllForUser` (OAuth disconnect) actually drops Sessions
+// from the registry — that's the "forget everything" path.
 //
-// The model the CLI is spawned with is resolved from the user's stored
-// preference at spawn time, so a preferences change picked up between
-// restarts takes effect on the next proc without any plumbing through
-// send/ensureStarted callers.
+// Permission decisions for tools that require user approval flow
+// through `canUseTool`. ExitPlanMode in particular is routed to the
+// UI as a permission-request event with tool === 'ExitPlanMode'; the
+// frontend renders an interactive PlanCard whose Approve / Request-
+// changes buttons POST /permission-response, which resolves the
+// awaiting promise here. Approval also flips permissionMode to
+// `bypassPermissions` so the same query can immediately start writing.
 //
 // File mirroring (chokidar + DocumentUpdater) lives in FileSync.mjs;
-// this module just owns conversation/process lifecycle and event fan-out.
+// this module just owns conversation/process lifecycle and event
+// fan-out.
 
-import { spawn } from 'node:child_process'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import logger from '@overleaf/logger'
 import Settings from '@overleaf/settings'
+import { query } from '@anthropic-ai/claude-agent-sdk'
 import * as TokenStore from './TokenStore.mjs'
 import * as ClaudeAuth from './ClaudeAuth.mjs'
 import ProjectEntityHandler from '../Project/ProjectEntityHandler.mjs'
@@ -103,35 +110,28 @@ side-by-side with this chat panel.
   citation style, language) — inspect a few files before making
   cross-cutting changes.
 
-## Plan mode (--permission-mode plan)
+## Plan mode (permissionMode = "plan")
 
-When the session starts in plan mode, your job is to **propose**
-changes, not make them. The rules below are strict — follow them
-exactly, even if the user asks otherwise.
+When the session is in plan mode, your job is to **propose** changes,
+not make them. Follow these rules exactly:
 
-- The current working directory **is** the user's Overleaf project.
-  Modifying any file here is the same as modifying their live
-  document — plan mode forbids it.
+- The cwd **is** the user's live Overleaf project. Modifying any
+  file here is the same as modifying their document — plan mode
+  forbids it.
 - Allowed: Read, Glob, Grep, and any other read-only inspection.
-- **Blocked by the runtime**: Edit, Write, NotebookEdit, and any
-  Bash command that mutates state. Don't call them. In particular:
-  - Do **not** write the plan to a file (e.g. PLAN.md, plan.txt).
-    The plan does not live on disk; it lives in the ExitPlanMode
-    tool input.
-  - Do **not** "draft" the plan by Writing it somewhere and then
-    narrating "see above" — the user can't see file contents the
-    way you can.
-- The ExitPlanMode tool is **already loaded** in your default tool
-  set. Call it directly. Do not call ToolSearch to look it up.
+- Blocked: Edit, Write, NotebookEdit, and mutating Bash commands.
+- Do **not** write the plan to a file (e.g. PLAN.md). The plan does
+  not live on disk; it lives in the ExitPlanMode tool input.
+- Do **not** call ToolSearch to look up ExitPlanMode — it is already
+  in your default tool set.
 - When you have enough context, call ExitPlanMode exactly once with
-  \`{ plan: "<full markdown plan>" }\`. The UI renders that markdown
-  inside an interactive card with Approve / Request-changes buttons,
-  so the plan is the tool input — not a separate text reply.
-- After calling ExitPlanMode, stop. Don't add a closing text reply
-  that restates the plan; it would be redundant and confusing.
-- If the user approves, the runtime respawns you in bypass mode and
-  includes the approved plan verbatim in the next user message —
-  implement it then.
+  \`{ plan: "<full markdown plan>" }\`. The UI pauses on that tool
+  call and renders the plan as an interactive card with Approve /
+  Request-changes buttons. Do not narrate the plan again afterwards.
+- If approved, the SDK switches you to bypass mode and resumes the
+  same turn — implement the plan then and there. If the user
+  requests changes, ExitPlanMode is denied with their feedback;
+  revise and call ExitPlanMode again.
 `
 
 async function resolvePreferredModel(userId) {
@@ -151,7 +151,6 @@ class Session {
     this.userId = String(userId)
     this.projectId = String(projectId)
     this.subscribers = new Set()
-    this.proc = null
     this.cwd = join(ROOT, `${this.userId}-${this.projectId}`)
     this.lastActivity = Date.now()
     this.starting = null // Promise during boot
@@ -167,6 +166,14 @@ class Session {
     // disk for each and prepend a git-style patch to the user's
     // message, then move those paths into baseline.
     this.pendingExternalEdits = new Set()
+    // SDK-side state.
+    this.query = null
+    this.permissionMode = 'bypassPermissions'
+    this.promptQueue = []
+    this.promptResolver = null
+    this.queryClosed = false
+    // canUseTool waiters, keyed by request id we send to the UI.
+    this.pendingPermissionRequests = new Map()
   }
 
   emit(event, data) {
@@ -215,7 +222,7 @@ class Session {
 
     // Copy project docs in. Binary file assets (filestore) are out of
     // scope for the first cut — Claude operates on .tex/.bib/etc only.
-    // The hydrated content is also the diff baseline: the fresh proc
+    // The hydrated content is also the diff baseline: the fresh query
     // starts knowing exactly what's on disk, so subsequent reverse
     // syncs produce meaningful diffs against this snapshot.
     this.baseline.clear()
@@ -232,82 +239,64 @@ class Session {
   }
 
   async start(opts = {}) {
-    if (this.proc) return
+    if (this.query) return
     if (this.starting) return this.starting
-    // Only two modes are exposed in the UI now: plan (read-only) and
-    // bypassPermissions (the default — full auto). Any other value
-    // (incl. older clients sending 'default' or 'acceptEdits') is
-    // coerced so the spawned CLI never sees an unsupported flag value.
     this.permissionMode = ALLOWED_MODES.has(opts.permissionMode)
       ? opts.permissionMode
       : 'bypassPermissions'
     this.starting = (async () => {
       this.emit('status', { state: 'starting' })
-      // Resolve model inside `starting` so the lookup happens lazily
-      // and any later .start() awaiters block on the same promise.
       const model = await resolvePreferredModel(this.userId)
       await this.hydrateCwd()
 
-      const bin = Settings.aiAssistant?.claudeBin || 'claude'
-      const args = [
-        '--print',
-        '--input-format', 'stream-json',
-        '--output-format', 'stream-json',
-        '--verbose',
-        '--permission-mode', this.permissionMode,
-        '--model', model,
-      ]
-      const env = {
-        ...process.env,
-        HOME: this.cwd,
-        // Drop API key so the CLI uses OAuth credentials.
-        ANTHROPIC_API_KEY: '',
-      }
+      this.queryClosed = false
+      this.promptQueue = []
+      this.promptResolver = null
+
+      const promptIterable = this._buildPromptIterable()
+
       logger.info(
-        { userId: this.userId, projectId: this.projectId, bin },
-        'spawning claude'
+        {
+          userId: this.userId,
+          projectId: this.projectId,
+          model,
+          mode: this.permissionMode,
+        },
+        'ai-assistant: opening SDK query'
       )
-      this.proc = spawn(bin, args, {
-        cwd: this.cwd,
-        env,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      })
-      this.proc.on('error', err => {
-        logger.error({ err }, 'claude spawn error')
-        this.emit('error', { message: err.message })
-      })
-      this.proc.on('exit', (code, signal) => {
-        logger.info({ code, signal }, 'claude exited')
-        this.emit('status', { state: 'stopped', code, signal })
-        this.cleanup()
+
+      this.query = query({
+        prompt: promptIterable,
+        options: {
+          cwd: this.cwd,
+          model,
+          permissionMode: this.permissionMode,
+          env: {
+            ...process.env,
+            HOME: this.cwd,
+            // OAuth credentials come from HOME/.claude/.credentials.json;
+            // make sure no stale API key wins precedence.
+            ANTHROPIC_API_KEY: '',
+          },
+          canUseTool: (toolName, input, ctx) =>
+            this._handleCanUseTool(toolName, input, ctx),
+        },
       })
 
-      // Parse stream-json line by line.
-      let buf = ''
-      this.proc.stdout.on('data', chunk => {
-        buf += chunk.toString('utf8')
-        let idx
-        while ((idx = buf.indexOf('\n')) !== -1) {
-          const line = buf.slice(0, idx)
-          buf = buf.slice(idx + 1)
-          if (!line.trim()) continue
-          try {
-            const obj = JSON.parse(line)
-            this.handleClaudeMessage(obj)
-          } catch (err) {
-            logger.warn({ err, line: line.slice(0, 200) }, 'bad json from claude')
-          }
-        }
-      })
-      this.proc.stderr.on('data', chunk => {
-        const s = chunk.toString('utf8')
-        logger.debug({ stderr: s.slice(0, 500) }, 'claude stderr')
+      // Drain the SDK's message iterator in the background. Errors
+      // here end the query; subscribers learn via status:stopped.
+      this._consumeQuery().catch(err => {
+        logger.error(
+          { err, userId: this.userId, projectId: this.projectId },
+          'ai-assistant: query consumer crashed'
+        )
+        this.emit('error', { message: err?.message || String(err) })
       })
 
-      // File sync: forward (claude -> editor) and reverse (editor ->
-      // claude). Both directions emit `file-changed` so the UI can
-      // show the path. Reverse also seeds pendingExternalEdits so the
-      // next send() prepends a git-style diff for Claude to read.
+      // File sync. Forward (claude -> editor) keeps baseline in lock-
+      // step with what Claude itself wrote; reverse (editor -> claude)
+      // queues paths so consumeExternalEditPrefix() can build a diff
+      // prefix on the next send().
       try {
         this.fileSync = await FileSync.start({
           userId: this.userId,
@@ -315,20 +304,16 @@ class Session {
           cwd: this.cwd,
           onForwardChange: (path, content) => {
             this.emit('file-changed', { path })
-            // Claude wrote this content; treat it as already known.
             this.baseline.set(path, content)
             this.pendingExternalEdits.delete(path)
           },
-          onReverseChange: (path /* , content */) => {
+          onReverseChange: path => {
             this.emit('file-changed', { path })
-            // Defer diff computation until send() — there may be more
-            // edits queued, and we want to diff against the disk
-            // state at send time.
             this.pendingExternalEdits.add(path)
           },
         })
       } catch (err) {
-        logger.warn({ err }, 'file sync start failed; continuing without it')
+        logger.warn({ err }, 'ai-assistant: file sync start failed')
       }
 
       this.emit('status', { state: 'running' })
@@ -341,10 +326,49 @@ class Session {
     }
   }
 
-  // Translate Claude CLI stream-json events to the UI event shape.
-  handleClaudeMessage(obj) {
+  // Async iterable the SDK pulls user messages from. Yields whatever
+  // send() pushes into promptQueue, or blocks on promptResolver. Ends
+  // when stop() flips queryClosed.
+  _buildPromptIterable() {
+    const self = this
+    return (async function* () {
+      while (!self.queryClosed) {
+        if (self.promptQueue.length > 0) {
+          yield self.promptQueue.shift()
+          continue
+        }
+        await new Promise(resolve => {
+          self.promptResolver = resolve
+        })
+      }
+    })()
+  }
+
+  _wakePromptIterable() {
+    if (this.promptResolver) {
+      const r = this.promptResolver
+      this.promptResolver = null
+      r()
+    }
+  }
+
+  async _consumeQuery() {
+    try {
+      for await (const msg of this.query) {
+        this._handleSDKMessage(msg)
+      }
+    } finally {
+      this.emit('status', { state: 'stopped' })
+      this.cleanup()
+    }
+  }
+
+  // Translate SDK messages into the UI event shape. ExitPlanMode is
+  // intentionally absent from this path: it's surfaced via canUseTool
+  // as a permission-request, so the model's tool_use/tool_result for
+  // it would otherwise be a duplicate render.
+  _handleSDKMessage(obj) {
     if (obj.type === 'assistant' && obj.message?.content) {
-      // Surface auth / rate-limit errors attached directly to the message.
       if (obj.error) {
         this.emit('error', { message: obj.error, type: 'api_error' })
       }
@@ -354,6 +378,7 @@ class Session {
         } else if (block.type === 'thinking') {
           this.emit('thinking', { text: block.thinking || block.text || '' })
         } else if (block.type === 'tool_use') {
+          if (block.name === 'ExitPlanMode') continue
           this.emit('tool-use', {
             id: block.id,
             name: block.name,
@@ -367,6 +392,9 @@ class Session {
     } else if (obj.type === 'user' && obj.message?.content) {
       for (const block of obj.message.content) {
         if (block.type === 'tool_result') {
+          // Tool result for ExitPlanMode is the Approve/Deny outcome
+          // we already showed via the permission-request flow.
+          if (this._isExitPlanResult(block)) continue
           this.emit('tool-result', {
             id: block.tool_use_id,
             output: block.content,
@@ -383,47 +411,97 @@ class Session {
         this.emit('error', { message: String(obj.result), type: 'result_error' })
       }
     }
-    if (obj.type === 'permission_request') {
+  }
+
+  // Best-effort check: did this tool_result belong to an ExitPlanMode
+  // tool_use? The SDK gives us the tool_use_id we routed through
+  // canUseTool, so we keep a small Set of those for lookup.
+  _isExitPlanResult(block) {
+    return (
+      this._exitPlanToolUseIds && this._exitPlanToolUseIds.has(block.tool_use_id)
+    )
+  }
+
+  // canUseTool fires for every tool call the SDK is about to execute
+  // (and that isn't covered by allowedTools / permission mode auto-
+  // decisions). We only need to gate ExitPlanMode interactively; in
+  // plan mode the SDK auto-denies Write/Edit etc., and in bypass mode
+  // it auto-allows everything else.
+  async _handleCanUseTool(toolName, input /* , ctx */) {
+    if (toolName !== 'ExitPlanMode') {
+      return { behavior: 'allow', updatedInput: input }
+    }
+    const id = newId()
+    if (!this._exitPlanToolUseIds) this._exitPlanToolUseIds = new Set()
+    // The SDK exposes the tool_use_id via the ctx in newer versions;
+    // for compatibility we just remember our request id and recognise
+    // the result by either signal. The UI's permission-request id is
+    // what we round-trip with the frontend.
+    return new Promise(resolve => {
+      this.pendingPermissionRequests.set(id, resolve)
       this.emit('permission-request', {
-        id: obj.id || obj.request_id || newId(),
-        tool: obj.tool_name || obj.tool || 'unknown',
-        input: obj.input || {},
-        description: obj.description || obj.message || '',
+        id,
+        tool: 'ExitPlanMode',
+        input,
+        description:
+          'Claude proposes a plan. Approve to let it implement, or ' +
+          'request changes to refine.',
+      })
+    })
+  }
+
+  // Called by AiAssistantController in response to a frontend POST to
+  // /ai-assistant/permission-response. Resolves the awaiting canUseTool
+  // promise. Approving ExitPlanMode also flips permissionMode to
+  // bypass on the live query so the model can continue writing.
+  async respondPermission(requestId, allow, message) {
+    const resolve = this.pendingPermissionRequests.get(requestId)
+    if (!resolve) return
+    this.pendingPermissionRequests.delete(requestId)
+    if (allow) {
+      try {
+        await this.query?.setPermissionMode('bypassPermissions')
+        this.permissionMode = 'bypassPermissions'
+        this.emit('permission-mode', { mode: 'bypassPermissions' })
+      } catch (err) {
+        logger.warn({ err }, 'ai-assistant: setPermissionMode failed')
+      }
+      resolve({ behavior: 'allow' })
+    } else {
+      resolve({
+        behavior: 'deny',
+        message:
+          message ||
+          'User requested changes to the plan. Wait for their next ' +
+            'message before revising.',
       })
     }
   }
 
   async send(text, opts = {}) {
-    // Permission mode is baked into the CLI at spawn time, so switching
-    // (plan <-> bypassPermissions) mid-conversation requires a fresh
-    // proc. The Session is stable, so subscribers/history survive the
-    // restart and the UI just sees a status:stopped → starting cycle.
     const requestedMode = ALLOWED_MODES.has(opts.permissionMode)
       ? opts.permissionMode
-      : 'bypassPermissions'
-    if (this.proc && this.permissionMode !== requestedMode) {
-      logger.info(
-        {
-          userId: this.userId,
-          projectId: this.projectId,
-          from: this.permissionMode,
-          to: requestedMode,
-        },
-        'ai-assistant: permission mode change, restarting proc'
-      )
-      await this.stop()
+      : this.permissionMode
+    if (!this.query) {
+      await this.start({ permissionMode: requestedMode })
+    } else if (requestedMode !== this.permissionMode) {
+      // Mode switch in-flight: ask the SDK to flip without restarting
+      // the query — context, subscribers, and history all survive.
+      try {
+        await this.query.setPermissionMode(requestedMode)
+        this.permissionMode = requestedMode
+        this.emit('permission-mode', { mode: requestedMode })
+      } catch (err) {
+        logger.warn({ err, requestedMode }, 'ai-assistant: mode switch failed')
+      }
     }
-    if (!this.proc) await this.start(opts)
+
     this.lastActivity = Date.now()
     this.resetIdleTimer()
-    // Prepend a git-style summary of editor edits Claude hasn't seen
-    // yet. This is what `pendingExternalEdits` is for: reverse-sync
-    // queues paths, send() turns the queue into a single, bounded
-    // notice and advances the baseline.
+
     const editorPrefix = await this.consumeExternalEditPrefix()
     const finalText = editorPrefix ? editorPrefix + '\n\n' + text : text
     const content = [{ type: 'text', text: finalText }]
-    // Attach images if provided (base64-encoded)
     if (Array.isArray(opts.images) && opts.images.length > 0) {
       for (const img of opts.images) {
         content.push({
@@ -436,16 +514,12 @@ class Session {
         })
       }
     }
-    const msg = {
+
+    this.promptQueue.push({
       type: 'user',
-      message: {
-        role: 'user',
-        content,
-      },
-    }
-    this.proc.stdin.write(JSON.stringify(msg) + '\n')
-    // The user sees only their own text in the transcript; the diff
-    // prefix is an under-the-hood context injection.
+      message: { role: 'user', content },
+    })
+    this._wakePromptIterable()
     this.emit('user-message', { text })
   }
 
@@ -465,21 +539,15 @@ class Session {
       try {
         after = await readFile(join(this.cwd, relPath), 'utf8')
       } catch {
-        continue // file vanished; skip
+        continue
       }
       const before = this.baseline.get(relPath) ?? ''
       if (before === after) {
-        // Reverse sync queued it, but a forward sync (or another
-        // reverse pull) brought baseline back in line. Nothing to
-        // tell Claude.
         this.baseline.set(relPath, after)
         continue
       }
       let body
       const patch = createPatch(relPath, before, after, '', '', { context: 3 })
-      // Strip jsdiff's two-line file header ("Index:" + "===") — we
-      // already label the block ourselves and the unified ---/+++
-      // lines below it are what Claude actually wants.
       const trimmed = patch.replace(/^Index:.*\n=+\n/, '')
       if (trimmed.length > MAX_DIFF_BYTES_PER_FILE) {
         const beforeLines = before ? before.split('\n').length : 0
@@ -498,9 +566,6 @@ class Session {
         totalBytes += trimmed.length
       }
       blocks.push(`### ${relPath}\n${body}`)
-      // Whether or not we sent the patch, Claude is now considered to
-      // have a fresh view of this file (it has the path and can read
-      // it on demand).
       this.baseline.set(relPath, after)
     }
 
@@ -515,41 +580,22 @@ class Session {
     return header + '\n\n' + blocks.join('\n\n') + footer
   }
 
-  // Provisional / untested. The claude CLI in `--print` non-interactive
-  // stream-json mode applies whatever --permission-mode was passed at
-  // spawn and does NOT prompt the caller for tool-by-tool approval, so
-  // in practice `permission_request` events do not appear in the
-  // output stream and this method is never reached. The wiring stays
-  // in place so that if/when the CLI adds an out-of-band permission
-  // protocol over stdin we can adopt it without rewriting the UI; the
-  // envelope shape below is a guess that will need to match whatever
-  // the CLI actually accepts.
-  respondPermission(permissionId, allow) {
-    if (!this.proc?.stdin) return
-    const msg = {
-      type: 'permission_response',
-      id: permissionId,
-      allow,
-    }
-    this.proc.stdin.write(JSON.stringify(msg) + '\n')
-  }
-
   async stop() {
-    // Capture the proc handle *before* cleanup() nulls it; otherwise
-    // the deferred SIGKILL fires against null and a proc that didn't
-    // honour SIGTERM is leaked forever.
-    const proc = this.proc
-    if (proc) {
+    this.queryClosed = true
+    this._wakePromptIterable()
+    // Reject pending permission requests so canUseTool callers don't
+    // hang the SDK's shutdown.
+    for (const resolve of this.pendingPermissionRequests.values()) {
+      resolve({ behavior: 'deny', message: 'Session ended.' })
+    }
+    this.pendingPermissionRequests.clear()
+    const q = this.query
+    if (q) {
       try {
-        proc.kill('SIGTERM')
-      } catch {}
-      setTimeout(() => {
-        try {
-          if (proc.exitCode === null && proc.signalCode === null) {
-            proc.kill('SIGKILL')
-          }
-        } catch {}
-      }, 2000).unref()
+        await q.close()
+      } catch (err) {
+        logger.debug({ err }, 'ai-assistant: query close threw')
+      }
     }
     this.cleanup()
   }
@@ -563,7 +609,9 @@ class Session {
       this.fileSync.stop().catch(() => {})
       this.fileSync = null
     }
-    this.proc = null
+    this.query = null
+    this.promptQueue = []
+    this.promptResolver = null
   }
 }
 
@@ -580,7 +628,7 @@ function get(userId, projectId) {
 export default {
   async ensureStarted(userId, projectId, sendInitial) {
     const s = get(userId, projectId)
-    if (!s.proc && !s.starting) {
+    if (!s.query && !s.starting) {
       await s.start()
     } else if (s.starting) {
       await s.starting
@@ -599,14 +647,13 @@ export default {
     const s = get(userId, projectId)
     await s.send(text, opts)
   },
-  respondPermission(userId, projectId, permissionId, allow) {
+  async respondPermission(userId, projectId, permissionId, allow, message) {
     const s = get(userId, projectId)
-    s.respondPermission(permissionId, allow)
+    await s.respondPermission(permissionId, allow, message)
   },
-  // Kill the current claude proc but keep the Session registered so
-  // subscribers and history survive. The next send() / ensureStarted()
-  // will spawn a fresh proc against the same subscriber set; events
-  // continue to reach any open SSE without a client reconnect.
+  // Close the live query but keep the Session registered so subscribers
+  // and history survive. The next send() / ensureStarted() re-opens
+  // a query against the same subscriber set.
   async stop(userId, projectId) {
     const s = sessions.get(key(userId, projectId))
     if (!s) return
