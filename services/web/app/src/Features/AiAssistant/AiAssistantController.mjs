@@ -314,14 +314,12 @@ export default {
     const heartbeat = setInterval(() => res.write(': ping\n\n'), 15000)
 
     try {
-      let model = 'sonnet'
-      try {
-        const user = await User.findById(userId, { 'aiAssistant.preferredModel': 1 }).exec()
-        model = user?.aiAssistant?.preferredModel || 'sonnet'
-      } catch {}
-      await AiAssistantManager.ensureStarted(userId, projectId, send, { model })
+      // Model preference is resolved inside AiAssistantManager at the
+      // moment of spawn, so callers don't have to pass it in.
+      await AiAssistantManager.ensureStarted(userId, projectId, send)
     } catch (err) {
-      const errorType = err.message === 'not_connected' ? 'not_connected' : 'internal_error'
+      const errorType =
+        err.message === 'not_connected' ? 'not_connected' : 'internal_error'
       send('error', { message: err.message, type: errorType })
       clearInterval(heartbeat)
       res.end()

@@ -456,7 +456,7 @@ function Chat({
   projectId: string
   account: string | null
   preferredModel: string
-  onModelChange: (model: string) => Promise<void> | void
+  onModelChange: (model: string) => void
   onDisconnect: () => void
 }) {
   const [messages, setMessages] = useState<Message[]>([])
@@ -473,14 +473,6 @@ function Chat({
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [showSessions, setShowSessions] = useState(false)
-  // Bumped after any POST /stop to force the SSE EventSource to
-  // close + reopen. Stop deletes the backend session, so the next
-  // user action would otherwise emit to a fresh Session with no
-  // subscribers (events get dropped, UI hangs on "Claude is
-  // working..."). Reconnecting re-subscribes against the new
-  // Session and also re-applies the current model preference.
-  const [streamGen, setStreamGen] = useState(0)
-  const reconnectStream = useCallback(() => setStreamGen(g => g + 1), [])
 
   // Refs let the long-lived SSE handlers and the persist callback see
   // the latest state without re-subscribing every render.
@@ -617,7 +609,7 @@ function Chat({
     })
     es.onerror = () => setState('idle')
     return () => es.close()
-  }, [projectId, persistMessages, streamGen])
+  }, [projectId, persistMessages])
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight })
@@ -687,8 +679,7 @@ function Chat({
       await postJSON(`/project/${projectId}/ai-assistant/stop`)
       setState('idle')
     } catch {}
-    reconnectStream()
-  }, [projectId, reconnectStream])
+  }, [projectId])
 
   const newConversation = useCallback(async () => {
     // Snapshot the outgoing conversation before clearing.
@@ -762,7 +753,6 @@ function Chat({
             } catch {}
             setState('idle')
             setSessionId(id)
-            reconnectStream()
             // Load the chosen session's saved transcript.
             try {
               const r = await getJSON<{ messages: Message[] }>(
@@ -824,13 +814,7 @@ function Chat({
         mode={mode}
         setMode={setMode}
         preferredModel={preferredModel}
-        onModelChange={async (model: string) => {
-          await onModelChange(model)
-          // Parent's onModelChange POSTs /stop after PUT /preferences;
-          // re-open the SSE so the next ensureStarted picks up the new
-          // model and re-subscribes to the fresh Session.
-          reconnectStream()
-        }}
+        onModelChange={onModelChange}
         useCtrlEnter={useCtrlEnter}
         toggleCtrlEnter={() => setUseCtrlEnter(v => !v)}
         onSend={() => send()}
@@ -1063,7 +1047,7 @@ function Composer({
   mode: PermissionMode
   setMode: (m: PermissionMode) => void
   preferredModel: string
-  onModelChange: (m: string) => Promise<void> | void
+  onModelChange: (m: string) => void
   useCtrlEnter: boolean
   toggleCtrlEnter: () => void
   onSend: () => void

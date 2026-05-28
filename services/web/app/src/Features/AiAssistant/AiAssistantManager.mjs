@@ -1,14 +1,27 @@
-// Per-(user, project) Claude CLI subprocess lifecycle. The CLI is spawned
-// with `--output-format stream-json --input-format stream-json` so we can
-// drive both directions over its stdio. Each session keeps:
-//   * a temp working dir hydrated from the project's docs
-//   * a fan-out set of SSE subscribers that receive events emitted by the
-//     subprocess
-//   * an idle timer that kills the process after AI_ASSISTANT_IDLE_MS of
-//     no user input
+// Per-(user, project) Claude CLI conversation lifecycle.
 //
-// File mirroring (chokidar + DocumentUpdater) lives in FileSync.mjs; this
-// module just owns process lifecycle and event fan-out.
+// A `Session` is the long-lived object — it survives proc restarts and
+// holds the things callers must not lose across a stop/start cycle:
+//   * the temp working dir hydrated from the project's docs
+//   * the fan-out set of SSE subscribers that receive events
+//   * a bounded ring buffer of recent events for late subscribers
+//
+// The claude subprocess is a transient incarnation owned by the Session.
+// `stop()` kills the proc and clears per-incarnation state (idle timer,
+// fileSync); it leaves the Session in the registry so the next `send()`
+// or `ensureStarted()` re-spawns against the same subscribers and the
+// UI continues to receive events without reconnecting the SSE stream.
+//
+// Only `stopAllForUser` (OAuth disconnect) actually drops Sessions from
+// the registry — that's the "forget everything" path.
+//
+// The model the CLI is spawned with is resolved from the user's stored
+// preference at spawn time, so a preferences change picked up between
+// restarts takes effect on the next proc without any plumbing through
+// send/ensureStarted callers.
+//
+// File mirroring (chokidar + DocumentUpdater) lives in FileSync.mjs;
+// this module just owns conversation/process lifecycle and event fan-out.
 
 import { spawn } from 'node:child_process'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
@@ -20,6 +33,7 @@ import * as TokenStore from './TokenStore.mjs'
 import * as ClaudeAuth from './ClaudeAuth.mjs'
 import ProjectEntityHandler from '../Project/ProjectEntityHandler.mjs'
 import FileSync from './FileSync.mjs'
+import { User } from '../../models/User.mjs'
 
 const ROOT = join(tmpdir(), 'overleaf-ai-assistant')
 const ALLOWED_MODES = new Set(['plan', 'bypassPermissions'])
@@ -31,6 +45,20 @@ function newId() {
 
 function key(userId, projectId) {
   return `${userId}:${projectId}`
+}
+
+const DEFAULT_MODEL = 'sonnet'
+
+async function resolvePreferredModel(userId) {
+  try {
+    const user = await User.findById(userId, {
+      'aiAssistant.preferredModel': 1,
+    }).exec()
+    return user?.aiAssistant?.preferredModel || DEFAULT_MODEL
+  } catch (err) {
+    logger.warn({ err, userId }, 'ai-assistant: model preference lookup failed')
+    return DEFAULT_MODEL
+  }
 }
 
 class Session {
@@ -106,9 +134,11 @@ class Session {
     this.permissionMode = ALLOWED_MODES.has(opts.permissionMode)
       ? opts.permissionMode
       : 'bypassPermissions'
-    const model = opts.model || 'sonnet'
     this.starting = (async () => {
       this.emit('status', { state: 'starting' })
+      // Resolve model inside `starting` so the lookup happens lazily
+      // and any later .start() awaiters block on the same promise.
+      const model = await resolvePreferredModel(this.userId)
       await this.hydrateCwd()
 
       const bin = Settings.aiAssistant?.claudeBin || 'claude'
@@ -330,10 +360,10 @@ function get(userId, projectId) {
 }
 
 export default {
-  async ensureStarted(userId, projectId, sendInitial, opts = {}) {
+  async ensureStarted(userId, projectId, sendInitial) {
     const s = get(userId, projectId)
     if (!s.proc && !s.starting) {
-      await s.start(opts)
+      await s.start()
     } else if (s.starting) {
       await s.starting
     }
@@ -355,13 +385,17 @@ export default {
     const s = get(userId, projectId)
     s.respondPermission(permissionId, allow)
   },
+  // Kill the current claude proc but keep the Session registered so
+  // subscribers and history survive. The next send() / ensureStarted()
+  // will spawn a fresh proc against the same subscriber set; events
+  // continue to reach any open SSE without a client reconnect.
   async stop(userId, projectId) {
-    const k = key(userId, projectId)
-    const s = sessions.get(k)
+    const s = sessions.get(key(userId, projectId))
     if (!s) return
     await s.stop()
-    sessions.delete(k)
   },
+  // Hard purge for OAuth disconnect: stop every Session for the user
+  // and drop them from the registry entirely.
   async stopAllForUser(userId) {
     const prefix = `${userId}:`
     const stops = []
