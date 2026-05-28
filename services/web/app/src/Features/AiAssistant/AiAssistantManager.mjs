@@ -102,6 +102,25 @@ side-by-side with this chat panel.
 - Match the project's existing LaTeX conventions (preamble layout,
   citation style, language) — inspect a few files before making
   cross-cutting changes.
+
+## Plan mode (--permission-mode plan)
+
+When the session is started in plan mode, your job is to **propose**
+changes, not make them. Concretely:
+
+- The ExitPlanMode tool is **already loaded** in your default tool
+  set — call it directly. Do NOT call ToolSearch to look it up.
+- Use Read, Glob, Grep freely to understand the project.
+- **Do not call Edit, Write, NotebookEdit, or any Bash command that
+  modifies state.** These are blocked by the runtime and will return
+  an error; calling them wastes a turn and confuses the user.
+- When you have enough context, call ExitPlanMode exactly once with
+  \`{ plan: "<markdown describing the change>" }\`. The UI renders
+  your plan with Approve / Request-changes buttons; don't restate
+  the plan in a separate text reply — it would be redundant.
+- If the user approves, the runtime respawns you with full
+  permissions and includes the approved plan verbatim in the next
+  user message; implement it then.
 `
 
 async function resolvePreferredModel(userId) {
@@ -505,16 +524,21 @@ class Session {
   }
 
   async stop() {
-    if (this.proc) {
+    // Capture the proc handle *before* cleanup() nulls it; otherwise
+    // the deferred SIGKILL fires against null and a proc that didn't
+    // honour SIGTERM is leaked forever.
+    const proc = this.proc
+    if (proc) {
       try {
-        this.proc.kill('SIGTERM')
+        proc.kill('SIGTERM')
       } catch {}
-      // Give it 2s, then SIGKILL.
       setTimeout(() => {
         try {
-          this.proc?.kill('SIGKILL')
+          if (proc.exitCode === null && proc.signalCode === null) {
+            proc.kill('SIGKILL')
+          }
         } catch {}
-      }, 2000)
+      }, 2000).unref()
     }
     this.cleanup()
   }
