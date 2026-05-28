@@ -70,6 +70,16 @@ type Message =
   | { kind: 'thinking'; text: string; id: string }
   | ToolUse
   | PermissionReq
+  | {
+      kind: 'plan'
+      id: string
+      plan: string
+      // 'tool'     — Claude correctly called ExitPlanMode.
+      // 'fallback' — Claude finished plan-mode turn without calling
+      //              ExitPlanMode; we salvaged the plan from a
+      //              blocked Write or the final assistant text.
+      source: 'tool' | 'fallback'
+    }
   | { kind: 'todos'; id: string; todos: Todo[] }
   | { kind: 'file-changed'; path: string; id: string }
   | { kind: 'error'; message: string; id: string }
@@ -77,6 +87,54 @@ type Message =
 
 function newId() {
   return Math.random().toString(36).slice(2)
+}
+
+// Where did this conversational turn begin? Used by the plan-mode
+// salvage path on turn-end to scope inspection to the current turn.
+function findTurnStartIdx(msgs: Message[]): number {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].kind === 'turn-divider') return i + 1
+    if (msgs[i].kind === 'user') return i // include the user message
+  }
+  return 0
+}
+
+// In plan mode Claude is supposed to call ExitPlanMode with the
+// plan markdown. If the model misbehaves — writes a PLAN.md file
+// (which the CLI blocks) or just narrates the plan in text — we
+// still want the user to be able to Approve. Pull the most useful
+// candidate out of the turn:
+//   1. Largest Write/Edit/NotebookEdit input.content (Claude
+//      attempted to write a plan-as-file).
+//   2. Concatenated assistant text (Claude narrated the plan).
+// Returns null if neither yields something plausibly plan-shaped.
+function extractFallbackPlan(turn: Message[]): string | null {
+  let bestWriteContent: string | null = null
+  let textParts: string[] = []
+  for (const m of turn) {
+    if (m.kind === 'tool-use') {
+      const name = m.name
+      if (name === 'Write' || name === 'Edit' || name === 'NotebookEdit') {
+        const c =
+          typeof m.input?.content === 'string'
+            ? m.input.content
+            : typeof m.input?.new_string === 'string'
+              ? m.input.new_string
+              : null
+        if (c && (!bestWriteContent || c.length > bestWriteContent.length)) {
+          bestWriteContent = c
+        }
+      }
+    } else if (m.kind === 'assistant') {
+      if (m.text && m.text.trim().length > 0) textParts.push(m.text)
+    }
+  }
+  if (bestWriteContent && bestWriteContent.trim().length >= 40) {
+    return bestWriteContent
+  }
+  const joined = textParts.join('\n\n').trim()
+  if (joined.length >= 40) return joined
+  return null
 }
 
 const MODE_OPTIONS: { value: PermissionMode; label: string }[] = [
@@ -591,12 +649,16 @@ function Chat({
   // the latest state without re-subscribing every render.
   const sessionIdRef = useRef<string | null>(null)
   const messagesRef = useRef<Message[]>([])
+  const modeRef = useRef<PermissionMode>(mode)
   useEffect(() => {
     sessionIdRef.current = sessionId
   }, [sessionId])
   useEffect(() => {
     messagesRef.current = messages
   }, [messages])
+  useEffect(() => {
+    modeRef.current = mode
+  }, [mode])
 
   // Persist the current conversation to its session row. Strips the
   // non-serializable `file: File` field from image attachments — we
@@ -666,6 +728,13 @@ function Chat({
     })
     es.addEventListener('tool-use', (ev: MessageEvent) => {
       const d = JSON.parse(ev.data)
+      // ExitPlanMode is the well-behaved plan-mode endpoint: lift it
+      // out of the generic tool stream and render as an interactive
+      // PlanCard via the 'plan' message kind.
+      if (d.name === 'ExitPlanMode' && typeof d.input?.plan === 'string') {
+        append({ kind: 'plan', id: d.id, plan: d.input.plan, source: 'tool' })
+        return
+      }
       append({ kind: 'tool-use', id: d.id, name: d.name, input: d.input })
     })
     es.addEventListener('tool-result', (ev: MessageEvent) => {
@@ -705,7 +774,32 @@ function Chat({
     })
     es.addEventListener('turn-end', () => {
       setState('idle')
-      append({ kind: 'turn-divider', id: newId() })
+      setMessages(curr => {
+        const next: Message[] = [...curr]
+        // Plan-mode salvage: if Claude finished a plan-mode turn
+        // without calling ExitPlanMode (it tried Write/Edit instead,
+        // or just narrated the plan in text), pull the plan out of
+        // whatever signal we have so the user can still Approve /
+        // Request changes instead of being stuck.
+        if (modeRef.current === 'plan') {
+          const turnStart = findTurnStartIdx(next)
+          const turnSlice = next.slice(turnStart)
+          const alreadyHasPlan = turnSlice.some(m => m.kind === 'plan')
+          if (!alreadyHasPlan) {
+            const salvaged = extractFallbackPlan(turnSlice)
+            if (salvaged) {
+              next.push({
+                kind: 'plan',
+                id: newId(),
+                plan: salvaged,
+                source: 'fallback',
+              })
+            }
+          }
+        }
+        next.push({ kind: 'turn-divider', id: newId() })
+        return next
+      })
       // Persist the conversation when each turn completes; the next
       // tick lets the divider append before we snapshot.
       setTimeout(() => persistMessages(), 0)
@@ -1048,24 +1142,16 @@ function MessageNode({
       </details>
     )
   }
-  if (m.kind === 'tool-use') {
-    // Plan-mode produces a single ExitPlanMode tool call carrying the
-    // full plan as markdown. Render it as an interactive card with
-    // approve / modify actions instead of a raw JSON dump.
-    if (m.name === 'ExitPlanMode') {
-      const plan =
-        typeof m.input?.plan === 'string'
-          ? m.input.plan
-          : JSON.stringify(m.input, null, 2)
-      return (
-        <PlanCard
-          plan={plan}
-          onApprove={() => onPlanApprove(plan)}
-          onModify={() => onPlanModify(plan)}
-        />
-      )
-    }
-    return <ToolUseCard m={m} />
+  if (m.kind === 'tool-use') return <ToolUseCard m={m} />
+  if (m.kind === 'plan') {
+    return (
+      <PlanCard
+        plan={m.plan}
+        source={m.source}
+        onApprove={() => onPlanApprove(m.plan)}
+        onModify={() => onPlanModify(m.plan)}
+      />
+    )
   }
   if (m.kind === 'permission-request') {
     return (
@@ -1160,10 +1246,12 @@ function PermissionCard({
 
 function PlanCard({
   plan,
+  source,
   onApprove,
   onModify,
 }: {
   plan: string
+  source: 'tool' | 'fallback'
   onApprove: () => void
   onModify: () => void
 }) {
@@ -1171,14 +1259,22 @@ function PlanCard({
   // accidentally re-fire approval / modify on the same card.
   const [acted, setActed] = useState<'approve' | 'modify' | null>(null)
   return (
-    <div className="cc-plan">
+    <div className={'cc-plan' + (source === 'fallback' ? ' cc-plan-fallback' : '')}>
       <div className="cc-plan-header">
         <span className="cc-plan-icon" aria-hidden>
           📋
         </span>
-        <span className="cc-plan-title">Proposed plan</span>
+        <span className="cc-plan-title">
+          {source === 'fallback' ? 'Plan (recovered)' : 'Proposed plan'}
+        </span>
         <span className="cc-plan-mode">plan mode</span>
       </div>
+      {source === 'fallback' && (
+        <div className="cc-plan-note">
+          Claude didn't call <code>ExitPlanMode</code>, so this plan was
+          salvaged from its reply. Review carefully before approving.
+        </div>
+      )}
       <div
         className="cc-plan-body cc-markdown"
         dangerouslySetInnerHTML={{ __html: renderMarkdown(plan) }}

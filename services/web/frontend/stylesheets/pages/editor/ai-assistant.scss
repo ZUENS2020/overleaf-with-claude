@@ -681,6 +681,24 @@ $cc-error: #cf5454;
   font-size: 11px;
   color: var(--content-secondary, #666);
 }
+.cc-plan-fallback {
+  border-style: dashed;
+  border-color: #b45309; // a bit darker than the regular amber
+}
+.cc-plan-note {
+  padding: 6px 12px;
+  background: #fff7ed;
+  border-bottom: 1px solid var(--border-divider, #eee);
+  font-size: 11px;
+  color: #92400e;
+  code {
+    background: rgba(180, 83, 9, 0.1);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: var(--font-monospace, ui-monospace, monospace);
+    font-size: 10.5px;
+  }
+}
 
 
 // Image attachments in composer ----------------------------------------

@@ -105,22 +105,33 @@ side-by-side with this chat panel.
 
 ## Plan mode (--permission-mode plan)
 
-When the session is started in plan mode, your job is to **propose**
-changes, not make them. Concretely:
+When the session starts in plan mode, your job is to **propose**
+changes, not make them. The rules below are strict — follow them
+exactly, even if the user asks otherwise.
 
+- The current working directory **is** the user's Overleaf project.
+  Modifying any file here is the same as modifying their live
+  document — plan mode forbids it.
+- Allowed: Read, Glob, Grep, and any other read-only inspection.
+- **Blocked by the runtime**: Edit, Write, NotebookEdit, and any
+  Bash command that mutates state. Don't call them. In particular:
+  - Do **not** write the plan to a file (e.g. PLAN.md, plan.txt).
+    The plan does not live on disk; it lives in the ExitPlanMode
+    tool input.
+  - Do **not** "draft" the plan by Writing it somewhere and then
+    narrating "see above" — the user can't see file contents the
+    way you can.
 - The ExitPlanMode tool is **already loaded** in your default tool
-  set — call it directly. Do NOT call ToolSearch to look it up.
-- Use Read, Glob, Grep freely to understand the project.
-- **Do not call Edit, Write, NotebookEdit, or any Bash command that
-  modifies state.** These are blocked by the runtime and will return
-  an error; calling them wastes a turn and confuses the user.
+  set. Call it directly. Do not call ToolSearch to look it up.
 - When you have enough context, call ExitPlanMode exactly once with
-  \`{ plan: "<markdown describing the change>" }\`. The UI renders
-  your plan with Approve / Request-changes buttons; don't restate
-  the plan in a separate text reply — it would be redundant.
-- If the user approves, the runtime respawns you with full
-  permissions and includes the approved plan verbatim in the next
-  user message; implement it then.
+  \`{ plan: "<full markdown plan>" }\`. The UI renders that markdown
+  inside an interactive card with Approve / Request-changes buttons,
+  so the plan is the tool input — not a separate text reply.
+- After calling ExitPlanMode, stop. Don't add a closing text reply
+  that restates the plan; it would be redundant and confusing.
+- If the user approves, the runtime respawns you in bypass mode and
+  includes the approved plan verbatim in the next user message —
+  implement it then.
 `
 
 async function resolvePreferredModel(userId) {
