@@ -271,6 +271,14 @@ class Session {
           cwd: this.cwd,
           model,
           permissionMode: this.permissionMode,
+          // The SDK ships per-platform CLI binaries as optional npm
+          // peers (e.g. @anthropic-ai/claude-agent-sdk-linux-x64).
+          // Our container installs the SDK from a vendored tarball
+          // without those peers, so point the SDK at the standalone
+          // `claude` CLI that's already on PATH from the
+          // @anthropic-ai/claude-code global install.
+          pathToClaudeCodeExecutable:
+            Settings.aiAssistant?.claudeBin || 'claude',
           env: {
             ...process.env,
             HOME: this.cwd,
