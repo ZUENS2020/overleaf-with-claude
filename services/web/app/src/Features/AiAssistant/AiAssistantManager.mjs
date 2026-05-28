@@ -56,6 +56,54 @@ const DEFAULT_MODEL = 'sonnet'
 const MAX_DIFF_BYTES_PER_FILE = 8 * 1024
 const MAX_DIFF_BYTES_TOTAL = 32 * 1024
 
+// Persistent context injected at session start as a user-global
+// CLAUDE.md. With HOME pointing at our temp cwd, the CLI picks this
+// up automatically — no --system-prompt flag needed. The project's
+// own CLAUDE.md (if the user has one in the LaTeX project) loads
+// separately and stacks on top.
+const SYSTEM_CONTEXT = `# Overleaf AI Assistant Environment
+
+You are running inside an Overleaf LaTeX editor as the user's AI
+pair-programmer. The user is editing this same project in a browser
+side-by-side with this chat panel.
+
+## Bidirectional file sync
+
+- Files you write with Edit / Write are pushed into Overleaf's
+  document store and appear in the user's CodeMirror editor in real
+  time. No need to instruct the user to "save" anything.
+- When the user edits in the editor, your **next user message** will
+  be prefixed with a git-style unified diff block under
+  \`[Overleaf editor activity ...]\`. The disk is already up to date
+  at that point — the diff is just so you know what they changed
+  without paying for a Read.
+- If the diff for a file is omitted as too large, use the Read tool
+  on that path to get the current content.
+
+## What this working directory contains
+
+- The current directory **is** the project root the user sees in
+  Overleaf. Treat relative paths the same way they do.
+- Only text source files are mirrored: \`.tex .bib .cls .sty .md
+  .txt .json .yaml .yml\`. Binary assets (images, PDFs, fonts) are
+  not synced and not present here — don't try to open or generate
+  them.
+- There is no build output: no \`.pdf\`, no \`.aux\`, no \`.log\`.
+  The user compiles in Overleaf's UI; you have no access to
+  \`latexmk\`, \`pdflatex\`, etc. Don't try to invoke them.
+- This is not a git repository. Don't run \`git\` commands.
+
+## House style
+
+- The chat panel is narrow (right-rail). Keep responses concise;
+  don't paste back content the editor already shows.
+- When making structural edits, prefer Edit over Write so changes
+  show as small diffs rather than full-file replacements.
+- Match the project's existing LaTeX conventions (preamble layout,
+  citation style, language) — inspect a few files before making
+  cross-cutting changes.
+`
+
 async function resolvePreferredModel(userId) {
   try {
     const user = await User.findById(userId, {
@@ -129,6 +177,11 @@ class Session {
       join(credDir, '.credentials.json'),
       JSON.stringify(ClaudeAuth.toCredentialsFile(tok))
     )
+
+    // Environment briefing for the CLI. Lives under .claude (i.e.
+    // HOME/.claude/CLAUDE.md), so any CLAUDE.md the user keeps in the
+    // project root stacks on top instead of being shadowed.
+    await writeFile(join(credDir, 'CLAUDE.md'), SYSTEM_CONTEXT)
 
     // Copy project docs in. Binary file assets (filestore) are out of
     // scope for the first cut — Claude operates on .tex/.bib/etc only.
