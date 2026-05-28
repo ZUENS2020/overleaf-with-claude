@@ -30,7 +30,7 @@
 // this module just owns conversation/process lifecycle and event
 // fan-out.
 
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import logger from '@overleaf/logger'
@@ -64,74 +64,12 @@ const MAX_DIFF_BYTES_PER_FILE = 8 * 1024
 const MAX_DIFF_BYTES_TOTAL = 32 * 1024
 
 // Persistent context injected at session start as a user-global
-// CLAUDE.md. With HOME pointing at our temp cwd, the CLI picks this
-// up automatically — no --system-prompt flag needed. The project's
-// own CLAUDE.md (if the user has one in the LaTeX project) loads
-// separately and stacks on top.
-const SYSTEM_CONTEXT = `# Overleaf AI Assistant Environment
-
-You are running inside an Overleaf LaTeX editor as the user's AI
-pair-programmer. The user is editing this same project in a browser
-side-by-side with this chat panel.
-
-## Bidirectional file sync
-
-- Files you write with Edit / Write are pushed into Overleaf's
-  document store and appear in the user's CodeMirror editor in real
-  time. No need to instruct the user to "save" anything.
-- When the user edits in the editor, your **next user message** will
-  be prefixed with a git-style unified diff block under
-  \`[Overleaf editor activity ...]\`. The disk is already up to date
-  at that point — the diff is just so you know what they changed
-  without paying for a Read.
-- If the diff for a file is omitted as too large, use the Read tool
-  on that path to get the current content.
-
-## What this working directory contains
-
-- The current directory **is** the project root the user sees in
-  Overleaf. Treat relative paths the same way they do.
-- Only text source files are mirrored: \`.tex .bib .cls .sty .md
-  .txt .json .yaml .yml\`. Binary assets (images, PDFs, fonts) are
-  not synced and not present here — don't try to open or generate
-  them.
-- There is no build output: no \`.pdf\`, no \`.aux\`, no \`.log\`.
-  The user compiles in Overleaf's UI; you have no access to
-  \`latexmk\`, \`pdflatex\`, etc. Don't try to invoke them.
-- This is not a git repository. Don't run \`git\` commands.
-
-## House style
-
-- The chat panel is narrow (right-rail). Keep responses concise;
-  don't paste back content the editor already shows.
-- When making structural edits, prefer Edit over Write so changes
-  show as small diffs rather than full-file replacements.
-- Match the project's existing LaTeX conventions (preamble layout,
-  citation style, language) — inspect a few files before making
-  cross-cutting changes.
-
-## Plan mode (permissionMode = "plan")
-
-When the session is in plan mode, your job is to **propose** changes,
-not make them. Follow these rules exactly:
-
-- The cwd **is** the user's live Overleaf project. Modifying any
-  file here is the same as modifying their document — plan mode
-  forbids it.
-- Allowed: Read, Glob, Grep, and any other read-only inspection.
-- Blocked: Edit, Write, NotebookEdit, and mutating Bash commands.
-- Do **not** write the plan to a file (e.g. PLAN.md). The plan does
-  not live on disk; it lives in the ExitPlanMode tool input.
-- Do **not** call ToolSearch to look up ExitPlanMode — it is already
-  in your default tool set.
-- When you have enough context, call ExitPlanMode exactly once with
-  \`{ plan: "<full markdown plan>" }\`. The UI pauses on that tool
-  call and renders the plan as an interactive card with Approve /
-  Request-changes buttons. Do not narrate the plan again afterwards.
-- If approved, the SDK switches you to bypass mode and resumes the
-  same turn — implement the plan then and there. If the user
-  requests changes, ExitPlanMode is denied with their feedback;
-  revise and call ExitPlanMode again.
+// CLAUDE.md. With HOME pointing at our temp cwd the CLI picks this
+// up automatically. Deliberately minimal: the SDK's own permission-
+// mode system reminders handle plan-mode rules, tool conventions,
+// etc.; over-instructing here only confuses the model when its
+// built-in protocol changes between releases.
+const SYSTEM_CONTEXT = `This working directory is the user's Overleaf LaTeX project. Files you read and write here are the same files they see in the Overleaf editor.
 `
 
 async function resolvePreferredModel(userId) {
@@ -432,30 +370,92 @@ class Session {
 
   // canUseTool fires for every tool call the SDK is about to execute
   // (and that isn't covered by allowedTools / permission mode auto-
-  // decisions). We only need to gate ExitPlanMode interactively; in
-  // plan mode the SDK auto-denies Write/Edit etc., and in bypass mode
-  // it auto-allows everything else.
+  // decisions). In plan mode the SDK auto-denies mutating tools;
+  // in bypass mode it auto-allows everything; the one case we have
+  // to surface interactively is ExitPlanMode, where the user needs
+  // a chance to approve or revise before Claude starts writing.
+  //
+  // Note on the plan content: claude-code's ExitPlanMode protocol
+  // changed (2.1.x) — the tool no longer carries the plan in its
+  // input. Instead the model writes the plan into a file the
+  // runtime's plan-mode system reminder points it at. To still show
+  // *something* useful in the PlanCard we scan cwd for the most
+  // recently modified text file (excluding our own .claude/ and the
+  // project's pre-existing files) and surface its contents. If
+  // nothing fits, we fall through to an info-only card so the user
+  // can still Approve / Deny — they just won't see the plan inline.
   async _handleCanUseTool(toolName, input /* , ctx */) {
     if (toolName !== 'ExitPlanMode') {
       return { behavior: 'allow', updatedInput: input }
     }
+    const planText = await this._readMostRecentPlanArtifact()
     const id = newId()
-    if (!this._exitPlanToolUseIds) this._exitPlanToolUseIds = new Set()
-    // The SDK exposes the tool_use_id via the ctx in newer versions;
-    // for compatibility we just remember our request id and recognise
-    // the result by either signal. The UI's permission-request id is
-    // what we round-trip with the frontend.
     return new Promise(resolve => {
       this.pendingPermissionRequests.set(id, resolve)
       this.emit('permission-request', {
         id,
         tool: 'ExitPlanMode',
-        input,
-        description:
-          'Claude proposes a plan. Approve to let it implement, or ' +
-          'request changes to refine.',
+        input: planText ? { plan: planText, raw: input } : input,
+        description: planText
+          ? 'Claude has prepared a plan. Approve to let it implement, ' +
+            'or request changes to refine.'
+          : 'Claude is ready to exit plan mode and start making ' +
+            'changes. Approve to continue, or deny to keep planning.',
       })
     })
+  }
+
+  // The SDK does not pass the plan content through ExitPlanMode any
+  // more. Heuristic recovery: scan cwd for the most recently
+  // touched text file that wasn't part of the project at session
+  // start (i.e. not in `baseline` — those are the user's pre-
+  // existing docs). The model writes its plan to a fresh file the
+  // SDK's plan-mode reminder points it at, and we just need to find
+  // it. Returns null if nothing plausible.
+  async _readMostRecentPlanArtifact() {
+    let best = null
+    let bestMtime = 0
+    const walk = async dir => {
+      let entries
+      try {
+        entries = await readdir(dir, { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const ent of entries) {
+        if (ent.name.startsWith('.')) continue // .claude, .cache, etc
+        const full = join(dir, ent.name)
+        if (ent.isDirectory()) {
+          await walk(full)
+          continue
+        }
+        if (!ent.isFile()) continue
+        if (!/\.(md|markdown|txt)$/i.test(ent.name)) continue
+        const rel = full.slice(this.cwd.length + 1)
+        // Skip files the user already had — those are project
+        // content, not Claude's plan artifact.
+        if (this.baseline.has(rel)) continue
+        let st
+        try {
+          st = await stat(full)
+        } catch {
+          continue
+        }
+        if (st.mtimeMs > bestMtime) {
+          bestMtime = st.mtimeMs
+          best = full
+        }
+      }
+    }
+    await walk(this.cwd)
+    if (!best) return null
+    try {
+      const content = await readFile(best, 'utf8')
+      const rel = best.slice(this.cwd.length + 1)
+      return `*(plan written to \`${rel}\`)*\n\n` + content
+    } catch {
+      return null
+    }
   }
 
   // Called by AiAssistantController in response to a frontend POST to
