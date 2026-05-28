@@ -141,10 +141,9 @@ via the diff UI's "Revert" button which calls the message API.
 - **File diff cards**: collapsible diff with Revert button
 - **Markdown rendering**: `.cc-markdown` with rounded code blocks
 
-`ai-assistant-settings.tsx` — Provider settings panel (⚙ tab):
-- Create/manage named provider profiles (OAuth, API key, custom relay URL)
-- Switch active provider; set model per provider
-- Delete or rename providers
+`ai-assistant-settings.tsx` — Provider settings panel (⚙ tab) — code exists on disk but is **not wired into the UI or backend router yet**.
+  Backend: `AiAssistantSettingsController.mjs` (225 lines, full CRUD) is not imported
+  by any router. Frontend component is not imported by the main pane.
 
 ### Security Model
 
@@ -193,6 +192,10 @@ The subprocess runs inside the web container:
 - [x] Message persistence (GET/PUT messages per session, capped at 200)
 - [x] Model selection (Sonnet/Opus/Haiku per user, stored in preferences)
 - [x] Multi-tenancy isolation (per-user credentials, sessions keyed by userId+projectId)
+
+#### Not Wired — Backend Code Exists, Needs Integration
+- [ ] Provider settings system (`AiAssistantSettingsController`) — code complete but not routed
+- [ ] Provider settings frontend (`ai-assistant-settings.tsx`) — component exists but not imported
 
 #### Phase 3 — Not started
 - [ ] SSE reconnection with history replay
