@@ -111,17 +111,7 @@ class Session {
     this.promptResolver = null
     this.queryClosed = false
     // canUseTool waiters, keyed by request id we send to the UI.
-    // Value is an async function called with the user's decision —
-    // either resolves a real SDK canUseTool promise, or (for the
-    // turn-end salvage path below) just flips permission mode.
     this.pendingPermissionRequests = new Map()
-    // Tracks whether the current turn already surfaced an ExitPlanMode
-    // permission request. If not, and we're in plan mode at turn-end,
-    // we synthesise one from whatever plan file the model wrote.
-    // This is the Haiku-was-lazy escape hatch: it sometimes writes a
-    // plan to disk, ToolSearches for ExitPlanMode, and never actually
-    // calls the tool, leaving the user with no way to act.
-    this._planSurfaceIssuedThisTurn = false
   }
 
   emit(event, data) {
