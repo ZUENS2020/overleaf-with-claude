@@ -42,16 +42,23 @@ export default {
   //   onForwardChange(relPath, content)  -- Claude wrote a file, now in docstore
   //   onReverseChange(relPath, content)  -- editor (or another client) wrote;
   //                                          content is what's now on disk
-  // Both fire after the corresponding write succeeds.
+  //   onPlanWritten(content)             -- Claude wrote a plan-mode artifact
+  //                                          under <cwd>/.claude/plans/*.md;
+  //                                          surface to the UI immediately so
+  //                                          the user can act even if the
+  //                                          model never calls ExitPlanMode.
+  // All fire after the corresponding write succeeds.
   async start({
     userId,
     projectId,
     cwd,
     onForwardChange,
     onReverseChange,
+    onPlanWritten,
   }) {
     const pending = new Map() // relPath -> timer (forward)
     const reversePending = new Map() // docId -> timer (reverse)
+    const planPending = new Map() // relPath -> timer (plan)
     const lastWritten = new Map() // relPath -> content; shared loop guard
     const docIdToPath = new Map() // docId -> relPath cache
 
@@ -116,14 +123,46 @@ export default {
     }
 
     function schedule(relPath) {
+      // Plan artefacts (claude-code 2.1.x writes them under
+      // <cwd>/.claude/plans/) get their own debounce + callback. We
+      // never push them to docstore — they're internal to the agent
+      // — but we do want the UI to see them the moment they land,
+      // mirroring how the VS Code extension opens a markdown preview
+      // as soon as the plan file appears.
+      if (
+        relPath.startsWith('.claude/plans/') &&
+        /\.(md|markdown)$/i.test(relPath)
+      ) {
+        const t = planPending.get(relPath)
+        if (t) clearTimeout(t)
+        planPending.set(
+          relPath,
+          setTimeout(() => planFlush(relPath), DEBOUNCE_MS)
+        )
+        return
+      }
       if (!TEXT_EXT.test(relPath)) return
-      if (relPath.startsWith('.claude/')) return // ignore our cred dir
+      if (relPath.startsWith('.claude/')) return // ignore creds, settings, etc
       const t = pending.get(relPath)
       if (t) clearTimeout(t)
       pending.set(
         relPath,
         setTimeout(() => flush(relPath), DEBOUNCE_MS)
       )
+    }
+
+    async function planFlush(relPath) {
+      planPending.delete(relPath)
+      const full = join(cwd, relPath)
+      try {
+        const st = await stat(full)
+        if (!st.isFile()) return
+        const buf = await readFile(full, 'utf8')
+        onPlanWritten?.(buf)
+      } catch (err) {
+        if (err.code === 'ENOENT') return
+        logger.warn({ err, relPath }, 'ai-assistant: plan flush failed')
+      }
     }
 
     const watcher = watch(cwd, { recursive: true }, (eventType, filename) => {
@@ -271,6 +310,8 @@ export default {
         pending.clear()
         for (const t of reversePending.values()) clearTimeout(t)
         reversePending.clear()
+        for (const t of planPending.values()) clearTimeout(t)
+        planPending.clear()
       },
     }
   },

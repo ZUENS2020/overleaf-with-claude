@@ -110,8 +110,22 @@ class Session {
     this.promptQueue = []
     this.promptResolver = null
     this.queryClosed = false
-    // canUseTool waiters, keyed by request id we send to the UI.
-    this.pendingPermissionRequests = new Map()
+    // Active ExitPlanMode flow. Two slots so the UI and the SDK can
+    // arrive in either order:
+    //   activePlanRequestId  — id of the permission-request event we
+    //     already sent to the frontend (so the user can act). Set
+    //     either when FileSync sees the plan file written, or when
+    //     canUseTool fires for ExitPlanMode, whichever happens first.
+    //   pendingPlanSdkResolver — the canUseTool resolver waiting for
+    //     our return. Null until the SDK actually invokes
+    //     canUseTool. respondPermission() resolves it once we know
+    //     the user's decision.
+    // Tool-use id tracking for ExitPlanMode so that its tool_result
+    // can be filtered out of the UI message stream (the PlanCard
+    // already represents the outcome).
+    this.activePlanRequestId = null
+    this.pendingPlanSdkResolver = null
+    this._exitPlanToolUseIds = new Set()
   }
 
   emit(event, data) {
@@ -257,6 +271,7 @@ class Session {
             this.emit('file-changed', { path })
             this.pendingExternalEdits.add(path)
           },
+          onPlanWritten: content => this._surfacePlanCard(content),
         })
       } catch (err) {
         logger.warn({ err }, 'ai-assistant: file sync start failed')
@@ -310,9 +325,10 @@ class Session {
   }
 
   // Translate SDK messages into the UI event shape. ExitPlanMode is
-  // intentionally absent from this path: it's surfaced via canUseTool
-  // as a permission-request, so the model's tool_use/tool_result for
-  // it would otherwise be a duplicate render.
+  // intentionally absent from this path: it's surfaced via the
+  // PlanCard (either from canUseTool or from the file-write hook),
+  // so the model's tool_use/tool_result for it would otherwise be a
+  // duplicate render.
   _handleSDKMessage(obj) {
     if (obj.type === 'assistant' && obj.message?.content) {
       if (obj.error) {
@@ -324,7 +340,10 @@ class Session {
         } else if (block.type === 'thinking') {
           this.emit('thinking', { text: block.thinking || block.text || '' })
         } else if (block.type === 'tool_use') {
-          if (block.name === 'ExitPlanMode') continue
+          if (block.name === 'ExitPlanMode') {
+            this._exitPlanToolUseIds.add(block.id)
+            continue
+          }
           this.emit('tool-use', {
             id: block.id,
             name: block.name,
@@ -338,9 +357,7 @@ class Session {
     } else if (obj.type === 'user' && obj.message?.content) {
       for (const block of obj.message.content) {
         if (block.type === 'tool_result') {
-          // Tool result for ExitPlanMode is the Approve/Deny outcome
-          // we already showed via the permission-request flow.
-          if (this._isExitPlanResult(block)) continue
+          if (this._exitPlanToolUseIds.has(block.tool_use_id)) continue
           this.emit('tool-result', {
             id: block.tool_use_id,
             output: block.content,
@@ -359,113 +376,104 @@ class Session {
     }
   }
 
-  // Best-effort check: did this tool_result belong to an ExitPlanMode
-  // tool_use? The SDK gives us the tool_use_id we routed through
-  // canUseTool, so we keep a small Set of those for lookup.
-  _isExitPlanResult(block) {
-    return (
-      this._exitPlanToolUseIds && this._exitPlanToolUseIds.has(block.tool_use_id)
-    )
-  }
-
   // canUseTool fires for every tool call the SDK is about to execute
-  // (and that isn't covered by allowedTools / permission mode auto-
-  // decisions). In plan mode the SDK auto-denies mutating tools;
-  // in bypass mode it auto-allows everything; the one case we have
-  // to surface interactively is ExitPlanMode, where the user needs
-  // a chance to approve or revise before Claude starts writing.
+  // and isn't covered by allowedTools / permission-mode auto-decisions.
+  // In bypass mode the SDK auto-allows everything; in plan mode it
+  // auto-denies mutating tools. The one interactive case is
+  // ExitPlanMode: the user needs to approve before the model leaves
+  // plan mode and starts writing.
   //
-  // Note on the plan content: claude-code's ExitPlanMode protocol
-  // changed (2.1.x) — the tool no longer carries the plan in its
-  // input. Instead the model writes the plan into a file the
-  // runtime's plan-mode system reminder points it at. To still show
-  // *something* useful in the PlanCard we scan cwd for the most
-  // recently modified text file (excluding our own .claude/ and the
-  // project's pre-existing files) and surface its contents. If
-  // nothing fits, we fall through to an info-only card so the user
-  // can still Approve / Deny — they just won't see the plan inline.
+  // Plan-content surfacing happens via two paths, whichever fires
+  // first:
+  //   1. FileSync's onPlanWritten hook (this is what the VS Code
+  //      extension uses). claude-code 2.1.x writes the plan to
+  //      <cwd>/.claude/plans/<slug>.md; the moment the file lands,
+  //      _surfacePlanCard surfaces it to the UI.
+  //   2. canUseTool fires for ExitPlanMode. If the PlanCard isn't
+  //      already shown (rare race — Haiku occasionally calls
+  //      ExitPlanMode without writing a plan first), we read the
+  //      plans dir on demand.
+  // Either way, respondPermission() reconciles the user's click
+  // with whichever resolver is waiting.
   async _handleCanUseTool(toolName, input /* , ctx */) {
     if (toolName !== 'ExitPlanMode') {
       return { behavior: 'allow', updatedInput: input }
     }
-    const planText = await this._readMostRecentPlanArtifact()
-    const id = newId()
     return new Promise(resolve => {
-      this.pendingPermissionRequests.set(id, resolve)
-      this.emit('permission-request', {
-        id,
-        tool: 'ExitPlanMode',
-        input: planText ? { plan: planText, raw: input } : input,
-        description: planText
-          ? 'Claude has prepared a plan. Approve to let it implement, ' +
-            'or request changes to refine.'
-          : 'Claude is ready to exit plan mode and start making ' +
-            'changes. Approve to continue, or deny to keep planning.',
+      this.pendingPlanSdkResolver = resolve
+      if (this.activePlanRequestId) return // PlanCard already shown
+      this._readMostRecentPlanArtifact().then(plan => {
+        this._surfacePlanCard(plan)
       })
     })
   }
 
-  // The SDK does not pass the plan content through ExitPlanMode any
-  // more. Heuristic recovery: scan cwd for the most recently
-  // touched text file that wasn't part of the project at session
-  // start (i.e. not in `baseline` — those are the user's pre-
-  // existing docs). The model writes its plan to a fresh file the
-  // SDK's plan-mode reminder points it at, and we just need to find
-  // it. Returns null if nothing plausible.
+  // Emit the PlanCard, idempotently. Called both from the FileSync
+  // plan-write hook (the common case) and from canUseTool when the
+  // model reached ExitPlanMode without ever writing a plan file.
+  _surfacePlanCard(planText) {
+    if (this.activePlanRequestId) return
+    const id = newId()
+    this.activePlanRequestId = id
+    this.emit('permission-request', {
+      id,
+      tool: 'ExitPlanMode',
+      input: planText ? { plan: planText } : {},
+      description: planText
+        ? 'Claude has prepared a plan. Approve to let it implement, or ' +
+          'request changes to refine.'
+        : 'Claude is ready to exit plan mode and start making changes. ' +
+          'Approve to continue, or deny to keep planning.',
+    })
+  }
+
+  // Read the most recent plan artefact from <cwd>/.claude/plans/. The
+  // CLI's plan-mode reminder tells the model to write there (default
+  // ~/.claude/plans/ + our HOME=cwd setup). Returns null if nothing
+  // is found.
   async _readMostRecentPlanArtifact() {
+    const plansDir = join(this.cwd, '.claude', 'plans')
+    let entries
+    try {
+      entries = await readdir(plansDir, { withFileTypes: true })
+    } catch {
+      return null
+    }
     let best = null
     let bestMtime = 0
-    const walk = async dir => {
-      let entries
+    for (const ent of entries) {
+      if (!ent.isFile()) continue
+      if (!/\.(md|markdown)$/i.test(ent.name)) continue
+      const full = join(plansDir, ent.name)
+      let st
       try {
-        entries = await readdir(dir, { withFileTypes: true })
+        st = await stat(full)
       } catch {
-        return
+        continue
       }
-      for (const ent of entries) {
-        if (ent.name.startsWith('.')) continue // .claude, .cache, etc
-        const full = join(dir, ent.name)
-        if (ent.isDirectory()) {
-          await walk(full)
-          continue
-        }
-        if (!ent.isFile()) continue
-        if (!/\.(md|markdown|txt)$/i.test(ent.name)) continue
-        const rel = full.slice(this.cwd.length + 1)
-        // Skip files the user already had — those are project
-        // content, not Claude's plan artifact.
-        if (this.baseline.has(rel)) continue
-        let st
-        try {
-          st = await stat(full)
-        } catch {
-          continue
-        }
-        if (st.mtimeMs > bestMtime) {
-          bestMtime = st.mtimeMs
-          best = full
-        }
+      if (st.mtimeMs > bestMtime) {
+        bestMtime = st.mtimeMs
+        best = full
       }
     }
-    await walk(this.cwd)
     if (!best) return null
     try {
-      const content = await readFile(best, 'utf8')
-      const rel = best.slice(this.cwd.length + 1)
-      return `*(plan written to \`${rel}\`)*\n\n` + content
+      return await readFile(best, 'utf8')
     } catch {
       return null
     }
   }
 
   // Called by AiAssistantController in response to a frontend POST to
-  // /ai-assistant/permission-response. Resolves the awaiting canUseTool
-  // promise. Approving ExitPlanMode also flips permissionMode to
-  // bypass on the live query so the model can continue writing.
+  // /ai-assistant/permission-response. Handles two cases:
+  //   - canUseTool has already fired: resolve its promise so the
+  //     model's tool call returns.
+  //   - canUseTool hasn't fired (model didn't reach ExitPlanMode):
+  //     still honour the user's intent by flipping to bypass mode,
+  //     so writes in the same query succeed without a respawn.
   async respondPermission(requestId, allow, message) {
-    const resolve = this.pendingPermissionRequests.get(requestId)
-    if (!resolve) return
-    this.pendingPermissionRequests.delete(requestId)
+    if (requestId !== this.activePlanRequestId) return
+    this.activePlanRequestId = null
     if (allow) {
       try {
         await this.query?.setPermissionMode('bypassPermissions')
@@ -474,15 +482,21 @@ class Session {
       } catch (err) {
         logger.warn({ err }, 'ai-assistant: setPermissionMode failed')
       }
-      resolve({ behavior: 'allow' })
-    } else {
-      resolve({
-        behavior: 'deny',
-        message:
-          message ||
-          'User requested changes to the plan. Wait for their next ' +
-            'message before revising.',
-      })
+    }
+    const resolver = this.pendingPlanSdkResolver
+    this.pendingPlanSdkResolver = null
+    if (resolver) {
+      resolver(
+        allow
+          ? { behavior: 'allow' }
+          : {
+              behavior: 'deny',
+              message:
+                message ||
+                'User requested changes to the plan. Wait for their ' +
+                  'next message before revising.',
+            }
+      )
     }
   }
 
@@ -506,6 +520,20 @@ class Session {
 
     this.lastActivity = Date.now()
     this.resetIdleTimer()
+
+    // The user typed instead of clicking the PlanCard. Treat that as
+    // "request changes" so the SDK's ExitPlanMode call unblocks and
+    // the model sees the user's text as feedback on its next turn.
+    // (If only the FileSync hook surfaced the card, there's no SDK
+    // resolver to flip and we just clear the card id.)
+    if (this.activePlanRequestId) {
+      this.activePlanRequestId = null
+      const resolver = this.pendingPlanSdkResolver
+      this.pendingPlanSdkResolver = null
+      if (resolver) {
+        resolver({ behavior: 'deny', message: 'User wants changes: ' + text })
+      }
+    }
 
     const editorPrefix = await this.consumeExternalEditPrefix()
     const finalText = editorPrefix ? editorPrefix + '\n\n' + text : text
@@ -591,12 +619,16 @@ class Session {
   async stop() {
     this.queryClosed = true
     this._wakePromptIterable()
-    // Reject pending permission requests so canUseTool callers don't
-    // hang the SDK's shutdown.
-    for (const resolve of this.pendingPermissionRequests.values()) {
-      resolve({ behavior: 'deny', message: 'Session ended.' })
+    // Don't leave the SDK's canUseTool waiting on a shutdown query.
+    if (this.pendingPlanSdkResolver) {
+      this.pendingPlanSdkResolver({
+        behavior: 'deny',
+        message: 'Session ended.',
+      })
+      this.pendingPlanSdkResolver = null
     }
-    this.pendingPermissionRequests.clear()
+    this.activePlanRequestId = null
+    this._exitPlanToolUseIds.clear()
     const q = this.query
     if (q) {
       try {
