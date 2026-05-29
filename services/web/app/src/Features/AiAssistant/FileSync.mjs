@@ -62,6 +62,13 @@ export default {
     const lastWritten = new Map() // relPath -> content; shared loop guard
     const docIdToPath = new Map() // docId -> relPath cache
 
+    // Coalesce rapid events on the same key into one delayed call.
+    function debounce(map, key, fn) {
+      const t = map.get(key)
+      if (t) clearTimeout(t)
+      map.set(key, setTimeout(fn, DEBOUNCE_MS))
+    }
+
     async function refreshDocMap() {
       const docs = await ProjectEntityHandler.promises.getAllDocs(projectId)
       docIdToPath.clear()
@@ -133,22 +140,12 @@ export default {
         relPath.startsWith('.claude/plans/') &&
         /\.(md|markdown)$/i.test(relPath)
       ) {
-        const t = planPending.get(relPath)
-        if (t) clearTimeout(t)
-        planPending.set(
-          relPath,
-          setTimeout(() => planFlush(relPath), DEBOUNCE_MS)
-        )
+        debounce(planPending, relPath, () => planFlush(relPath))
         return
       }
       if (!TEXT_EXT.test(relPath)) return
       if (relPath.startsWith('.claude/')) return // ignore creds, settings, etc
-      const t = pending.get(relPath)
-      if (t) clearTimeout(t)
-      pending.set(
-        relPath,
-        setTimeout(() => flush(relPath), DEBOUNCE_MS)
-      )
+      debounce(pending, relPath, () => flush(relPath))
     }
 
     async function planFlush(relPath) {
@@ -213,12 +210,7 @@ export default {
     }
 
     function scheduleReverse(docId) {
-      const t = reversePending.get(docId)
-      if (t) clearTimeout(t)
-      reversePending.set(
-        docId,
-        setTimeout(() => pullDocToFile(docId), DEBOUNCE_MS)
-      )
+      debounce(reversePending, docId, () => pullDocToFile(docId))
     }
 
     function handleOpEvent(parsed) {

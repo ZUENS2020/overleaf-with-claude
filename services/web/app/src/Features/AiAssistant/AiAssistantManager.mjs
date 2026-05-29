@@ -395,9 +395,9 @@ class Session {
   //      plans dir on demand.
   // Either way, respondPermission() reconciles the user's click
   // with whichever resolver is waiting.
-  async _handleCanUseTool(toolName, input /* , ctx */) {
+  _handleCanUseTool(toolName, input /* , ctx */) {
     if (toolName !== 'ExitPlanMode') {
-      return { behavior: 'allow', updatedInput: input }
+      return Promise.resolve({ behavior: 'allow', updatedInput: input })
     }
     return new Promise(resolve => {
       this.pendingPlanSdkResolver = resolve
@@ -425,6 +425,18 @@ class Session {
         : 'Claude is ready to exit plan mode and start making changes. ' +
           'Approve to continue, or deny to keep planning.',
     })
+  }
+
+  // Resolve any in-flight PlanCard. Clears both slots so the next
+  // ExitPlanMode flow starts clean, and hands the verdict to the SDK
+  // canUseTool resolver if it's waiting. A null resolver means only
+  // the file-write hook surfaced the card — no SDK promise to
+  // release, just bookkeeping.
+  _finishPendingPlan(verdict) {
+    this.activePlanRequestId = null
+    const resolver = this.pendingPlanSdkResolver
+    this.pendingPlanSdkResolver = null
+    if (resolver) resolver(verdict)
   }
 
   // Read the most recent plan artefact from <cwd>/.claude/plans/. The
@@ -473,7 +485,6 @@ class Session {
   //     so writes in the same query succeed without a respawn.
   async respondPermission(requestId, allow, message) {
     if (requestId !== this.activePlanRequestId) return
-    this.activePlanRequestId = null
     if (allow) {
       try {
         await this.query?.setPermissionMode('bypassPermissions')
@@ -483,21 +494,17 @@ class Session {
         logger.warn({ err }, 'ai-assistant: setPermissionMode failed')
       }
     }
-    const resolver = this.pendingPlanSdkResolver
-    this.pendingPlanSdkResolver = null
-    if (resolver) {
-      resolver(
-        allow
-          ? { behavior: 'allow' }
-          : {
-              behavior: 'deny',
-              message:
-                message ||
-                'User requested changes to the plan. Wait for their ' +
-                  'next message before revising.',
-            }
-      )
-    }
+    this._finishPendingPlan(
+      allow
+        ? { behavior: 'allow' }
+        : {
+            behavior: 'deny',
+            message:
+              message ||
+              'User requested changes to the plan. Wait for their ' +
+                'next message before revising.',
+          }
+    )
   }
 
   async send(text, opts = {}) {
@@ -524,15 +531,11 @@ class Session {
     // The user typed instead of clicking the PlanCard. Treat that as
     // "request changes" so the SDK's ExitPlanMode call unblocks and
     // the model sees the user's text as feedback on its next turn.
-    // (If only the FileSync hook surfaced the card, there's no SDK
-    // resolver to flip and we just clear the card id.)
     if (this.activePlanRequestId) {
-      this.activePlanRequestId = null
-      const resolver = this.pendingPlanSdkResolver
-      this.pendingPlanSdkResolver = null
-      if (resolver) {
-        resolver({ behavior: 'deny', message: 'User wants changes: ' + text })
-      }
+      this._finishPendingPlan({
+        behavior: 'deny',
+        message: 'User wants changes: ' + text,
+      })
     }
 
     const editorPrefix = await this.consumeExternalEditPrefix()
@@ -620,15 +623,11 @@ class Session {
     this.queryClosed = true
     this._wakePromptIterable()
     // Don't leave the SDK's canUseTool waiting on a shutdown query.
+    // (cleanup() below also resets activePlanRequestId / tool-use ids,
+    // but we have to release the SDK resolver before close().)
     if (this.pendingPlanSdkResolver) {
-      this.pendingPlanSdkResolver({
-        behavior: 'deny',
-        message: 'Session ended.',
-      })
-      this.pendingPlanSdkResolver = null
+      this._finishPendingPlan({ behavior: 'deny', message: 'Session ended.' })
     }
-    this.activePlanRequestId = null
-    this._exitPlanToolUseIds.clear()
     const q = this.query
     if (q) {
       try {
@@ -652,6 +651,16 @@ class Session {
     this.query = null
     this.promptQueue = []
     this.promptResolver = null
+    // Per-query plan state. cleanup() runs at every query end —
+    // explicit stop(), natural end-of-stream from _consumeQuery's
+    // finally, or crash — so a stale activePlanRequestId never
+    // leaks into the next query and silently swallows the next
+    // _surfacePlanCard call. stop() handles the canUseTool
+    // resolver separately (before this runs) because it needs to
+    // hand the SDK a deny verdict.
+    this.activePlanRequestId = null
+    this.pendingPlanSdkResolver = null
+    this._exitPlanToolUseIds.clear()
   }
 }
 
